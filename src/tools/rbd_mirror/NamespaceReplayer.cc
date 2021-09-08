@@ -30,17 +30,14 @@ using ::operator<<;
 namespace {
 
 const std::string SERVICE_DAEMON_LOCAL_COUNT_KEY("image_local_count");
-const std::string SERVICE_DAEMON_REMOTE_COUNT_KEY("image_remote_count");
 
 } // anonymous namespace
 
 template <typename I>
 NamespaceReplayer<I>::NamespaceReplayer(
     const std::string &name,
-    librados::IoCtx &local_io_ctx, librados::IoCtx &remote_io_ctx,
+    librados::IoCtx &local_io_ctx,
     const std::string &local_mirror_uuid,
-    const std::string& local_mirror_peer_uuid,
-    const RemotePoolMeta& remote_pool_meta,
     Threads<I> *threads,
     Throttler<I> *image_sync_throttler,
     Throttler<I> *image_deletion_throttler,
@@ -49,8 +46,6 @@ NamespaceReplayer<I>::NamespaceReplayer(
     PoolMetaCache* pool_meta_cache) :
   m_namespace_name(name),
   m_local_mirror_uuid(local_mirror_uuid),
-  m_local_mirror_peer_uuid(local_mirror_peer_uuid),
-  m_remote_pool_meta(remote_pool_meta),
   m_threads(threads), m_image_sync_throttler(image_sync_throttler),
   m_image_deletion_throttler(image_deletion_throttler),
   m_service_daemon(service_daemon),
@@ -65,18 +60,25 @@ NamespaceReplayer<I>::NamespaceReplayer(
 
   m_local_io_ctx.dup(local_io_ctx);
   m_local_io_ctx.set_namespace(name);
-  m_remote_io_ctx.dup(remote_io_ctx);
-  m_remote_io_ctx.set_namespace(name);
 }
 
 template <typename I>
 bool NamespaceReplayer<I>::is_blocklisted() const {
   std::lock_guard locker{m_lock};
-  return m_instance_replayer->is_blocklisted() ||
-         (m_local_pool_watcher &&
-          m_local_pool_watcher->is_blocklisted()) ||
-         (m_remote_pool_watcher &&
-          m_remote_pool_watcher->is_blocklisted());
+  if (m_instance_replayer->is_blocklisted() ||
+      (m_local_pool_watcher &&
+       m_local_pool_watcher->is_blocklisted())) {
+    return true;
+  }
+
+  for (const auto& kv_it : m_peers) {
+    if (kv_it.second.pool_watcher &&
+        kv_it.second.pool_watcher->is_blocklisted()) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 template <typename I>
@@ -192,12 +194,6 @@ void NamespaceReplayer<I>::handle_update(const std::string &mirror_uuid,
   m_service_daemon->add_or_update_namespace_attribute(
     m_local_io_ctx.get_id(), m_local_io_ctx.get_namespace(),
     SERVICE_DAEMON_LOCAL_COUNT_KEY, m_local_pool_watcher->get_image_count());
-  if (m_remote_pool_watcher) {
-    m_service_daemon->add_or_update_namespace_attribute(
-      m_local_io_ctx.get_id(), m_local_io_ctx.get_namespace(),
-      SERVICE_DAEMON_REMOTE_COUNT_KEY,
-      m_remote_pool_watcher->get_image_count());
-  }
 
   std::set<std::string> added_global_image_ids;
   for (auto& image_id : added_image_ids) {
@@ -300,40 +296,6 @@ void NamespaceReplayer<I>::handle_init_local_status_updater(int r) {
     return;
   }
 
-  init_remote_status_updater();
-}
-
-template <typename I>
-void NamespaceReplayer<I>::init_remote_status_updater() {
-  dout(10) << dendl;
-
-  ceph_assert(ceph_mutex_is_locked(m_lock));
-  ceph_assert(!m_remote_status_updater);
-
-  m_remote_status_updater.reset(MirrorStatusUpdater<I>::create(
-    m_remote_io_ctx, m_threads, m_local_mirror_uuid));
-  auto ctx = create_context_callback<
-    NamespaceReplayer<I>,
-    &NamespaceReplayer<I>::handle_init_remote_status_updater>(this);
-  m_remote_status_updater->init(ctx);
-}
-
-template <typename I>
-void NamespaceReplayer<I>::handle_init_remote_status_updater(int r) {
-  dout(10) << "r=" << r << dendl;
-
-  std::lock_guard locker{m_lock};
-
-  if (r < 0) {
-    derr << "error initializing remote mirror status updater: "
-         << cpp_strerror(r) << dendl;
-
-    m_remote_status_updater.reset();
-    m_ret_val = r;
-    shut_down_local_status_updater();
-    return;
-  }
-
   init_instance_replayer();
 }
 
@@ -366,13 +328,15 @@ void NamespaceReplayer<I>::handle_init_instance_replayer(int r) {
 
     m_instance_replayer.reset();
     m_ret_val = r;
-    shut_down_remote_status_updater();
+    shut_down_local_status_updater();
     return;
   }
 
-  m_instance_replayer->add_peer({m_local_mirror_peer_uuid, m_remote_io_ctx,
-                                 m_remote_pool_meta,
-                                 m_remote_status_updater.get()});
+  for (auto kv_it : m_peers) {
+    m_instance_replayer->add_peer({kv_it.second.uuid, kv_it.second.io_ctx,
+                                   kv_it.second.remote_pool_meta,
+                                   kv_it.second.status_updater});
+  }
 
   init_instance_watcher();
 }
@@ -496,36 +460,6 @@ void NamespaceReplayer<I>::handle_shut_down_instance_replayer(int r) {
   std::lock_guard locker{m_lock};
 
   m_instance_replayer.reset();
-
-  shut_down_remote_status_updater();
-}
-
-template <typename I>
-void NamespaceReplayer<I>::shut_down_remote_status_updater() {
-  dout(10) << dendl;
-
-  ceph_assert(ceph_mutex_is_locked(m_lock));
-  ceph_assert(m_remote_status_updater);
-
-  auto ctx = create_async_context_callback(
-    m_threads->work_queue, create_context_callback<
-      NamespaceReplayer<I>,
-      &NamespaceReplayer<I>::handle_shut_down_remote_status_updater>(this));
-  m_remote_status_updater->shut_down(ctx);
-}
-
-template <typename I>
-void NamespaceReplayer<I>::handle_shut_down_remote_status_updater(int r) {
-  dout(10) << "r=" << r << dendl;
-
-  if (r < 0) {
-    derr << "error shutting remote mirror status updater down: "
-         << cpp_strerror(r) << dendl;
-  }
-
-  std::lock_guard locker{m_lock};
-  m_remote_status_updater.reset();
-
   shut_down_local_status_updater();
 }
 
@@ -560,7 +494,6 @@ void NamespaceReplayer<I>::handle_shut_down_local_status_updater(int r) {
   ceph_assert(!m_image_map);
   ceph_assert(!m_image_deleter);
   ceph_assert(!m_local_pool_watcher);
-  ceph_assert(!m_remote_pool_watcher);
   ceph_assert(!m_instance_watcher);
   ceph_assert(!m_instance_replayer);
 
@@ -631,45 +564,6 @@ void NamespaceReplayer<I>::handle_init_local_pool_watcher(
   dout(10) << "r=" << r << dendl;
   if (r < 0) {
     derr << "failed to retrieve local images: " << cpp_strerror(r) << dendl;
-    on_finish = new LambdaContext([on_finish, r](int) {
-        on_finish->complete(r);
-      });
-    shut_down_pool_watchers(on_finish);
-    return;
-  }
-
-  init_remote_pool_watcher(on_finish);
-}
-
-template <typename I>
-void NamespaceReplayer<I>::init_remote_pool_watcher(Context *on_finish) {
-  dout(10) << dendl;
-
-  std::lock_guard locker{m_lock};
-  ceph_assert(!m_remote_pool_watcher);
-  m_remote_pool_watcher.reset(PoolWatcher<I>::create(
-      m_threads, m_remote_io_ctx, m_remote_pool_meta.mirror_uuid,
-      m_remote_pool_watcher_listener));
-
-  auto ctx = new LambdaContext([this, on_finish](int r) {
-      handle_init_remote_pool_watcher(r, on_finish);
-    });
-  m_remote_pool_watcher->init(create_async_context_callback(
-    m_threads->work_queue, ctx));
-}
-
-template <typename I>
-void NamespaceReplayer<I>::handle_init_remote_pool_watcher(
-    int r, Context *on_finish) {
-  dout(10) << "r=" << r << dendl;
-  if (r == -ENOENT) {
-    // Technically nothing to do since the other side doesn't
-    // have mirroring enabled. Eventually the remote pool watcher will
-    // detect images (if mirroring is enabled), so no point propagating
-    // an error which would just busy-spin the state machines.
-    dout(0) << "remote peer does not have mirroring configured" << dendl;
-  } else if (r < 0) {
-    derr << "failed to retrieve remote images: " << cpp_strerror(r) << dendl;
     on_finish = new LambdaContext([on_finish, r](int) {
         on_finish->complete(r);
       });
@@ -756,13 +650,7 @@ void NamespaceReplayer<I>::shut_down_pool_watchers(Context *on_finish) {
           handle_shut_down_pool_watchers(r, on_finish);
 	});
       ctx = create_async_context_callback(m_threads->work_queue, ctx);
-
-      auto gather_ctx = new C_Gather(g_ceph_context, ctx);
-      m_local_pool_watcher->shut_down(gather_ctx->new_sub());
-      if (m_remote_pool_watcher) {
-	m_remote_pool_watcher->shut_down(gather_ctx->new_sub());
-      }
-      gather_ctx->activate();
+      m_local_pool_watcher->shut_down(ctx);
       return;
     }
   }
@@ -779,10 +667,6 @@ void NamespaceReplayer<I>::handle_shut_down_pool_watchers(
     std::lock_guard locker{m_lock};
     ceph_assert(m_local_pool_watcher);
     m_local_pool_watcher.reset();
-
-    if (m_remote_pool_watcher) {
-      m_remote_pool_watcher.reset();
-    }
   }
   shut_down_image_map(on_finish);
 }
@@ -854,6 +738,218 @@ void NamespaceReplayer<I>::handle_remove_image(const std::string &mirror_uuid,
 
   m_instance_watcher->notify_peer_image_removed(instance_id, global_image_id,
                                                 mirror_uuid, on_finish);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::add_peer(const Peer<I>& peer, Context* on_finish) {
+  dout(20) << "peer=" << peer.uuid << dendl;
+  std::lock_guard locker{m_lock};
+  ceph_assert(on_finish);
+
+  ceph_assert(peer.status_updater == nullptr);
+  ceph_assert(peer.pool_watcher == nullptr);
+
+  auto result = m_peers.insert({peer.uuid, peer});
+  ceph_assert(result.second);
+
+  result.first->second.io_ctx.dup(peer.io_ctx);
+  result.first->second.io_ctx.set_namespace(m_namespace_name);
+
+  auto ctx = new LambdaContext([this, result, on_finish](int) {
+    if (m_instance_replayer) {
+      m_instance_replayer->add_peer({result.first->second.uuid,
+                                     result.first->second.io_ctx,
+                                     result.first->second.remote_pool_meta,
+                                     result.first->second.status_updater});
+    }
+    m_threads->work_queue->queue(on_finish);
+  });
+
+  init_remote_status_updater(result.first->second, ctx);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::init_remote_status_updater(Peer<I>& peer,
+                                                      Context* on_finish) {
+  dout(10) << "peer=" << peer.uuid << dendl;
+
+  ceph_assert(ceph_mutex_is_locked(m_lock));
+  ceph_assert(peer.status_updater == nullptr);
+
+  peer.status_updater = MirrorStatusUpdater<I>::create(
+    peer.io_ctx, m_threads, m_local_mirror_uuid);
+  auto ctx = new LambdaContext([this, &peer, on_finish](int r) {
+    handle_init_remote_status_updater(peer, r, on_finish);
+  });
+  peer.status_updater->init(ctx);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::handle_init_remote_status_updater(
+    Peer<I>& peer, int r, Context *on_finish)
+{
+  dout(10) << "r=" << r << dendl;
+
+  std::lock_guard locker{m_lock};
+
+  if (r < 0) {
+    derr << "error initializing remote mirror status updater: "
+         << cpp_strerror(r) << dendl;
+
+    delete peer.status_updater;
+    peer.status_updater = nullptr;
+    on_finish->complete(r);
+    return;
+  }
+
+  init_remote_pool_watcher(peer, on_finish);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::init_remote_pool_watcher(Peer<I>& peer,
+                                                    Context *on_finish) {
+  dout(10) << dendl;
+
+  ceph_assert(ceph_mutex_is_locked(m_lock));
+  ceph_assert(on_finish);
+  ceph_assert(!peer.pool_watcher);
+  peer.pool_watcher = PoolWatcher<I>::create(
+      m_threads, peer.io_ctx, peer.remote_pool_meta.mirror_uuid,
+      m_remote_pool_watcher_listener);
+
+  auto ctx = new LambdaContext([this, &peer, on_finish](int r) {
+    handle_init_remote_pool_watcher(peer, r, on_finish);
+  });
+  peer.pool_watcher->init(create_async_context_callback(
+    m_threads->work_queue, ctx));
+}
+
+template <typename I>
+void NamespaceReplayer<I>::handle_init_remote_pool_watcher(
+    Peer<I>& peer, int r, Context *on_finish) {
+  dout(10) << "r=" << r << dendl;
+  std::lock_guard locker{m_lock};
+
+  if (r == -ENOENT) {
+    // Technically nothing to do since the other side doesn't
+    // have mirroring enabled. Eventually the remote pool watcher will
+    // detect images (if mirroring is enabled), so no point propagating
+    // an error which would just busy-spin the state machines.
+    dout(0) << "remote peer does not have mirroring configured" << dendl;
+  } else if (r < 0) {
+    derr << "failed to retrieve remote images: " << cpp_strerror(r) << dendl;
+    on_finish = new LambdaContext([on_finish, r](int) {
+      on_finish->complete(r);
+    });
+    delete peer.pool_watcher;
+    peer.pool_watcher = nullptr;
+    shut_down_remote_status_updater(peer, on_finish);
+    return;
+  }
+
+  ceph_assert(on_finish);
+  m_threads->work_queue->queue(on_finish);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::shut_down_remote_status_updater(Peer<I>& peer,
+                                                           Context *on_finish)
+{
+  dout(10) << dendl;
+
+  ceph_assert(ceph_mutex_is_locked(m_lock));
+  ceph_assert(peer.status_updater);
+
+  auto ctx = new LambdaContext([this, &peer, on_finish](int r) {
+      handle_shut_down_remote_status_updater(peer, r, on_finish);
+  });
+  peer.status_updater->shut_down(ctx);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::handle_shut_down_remote_status_updater(
+    Peer<I>& peer, int r, Context *on_finish) {
+  dout(10) << "r=" << r << dendl;
+
+  if (r < 0) {
+    derr << "error shutting remote mirror status updater down: "
+         << cpp_strerror(r) << dendl;
+  }
+
+  std::lock_guard locker{m_lock};
+  delete peer.status_updater;
+  peer.status_updater = nullptr;
+
+  ceph_assert(on_finish);
+  m_threads->work_queue->queue(on_finish);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::remove_peer(const Peer<I>& peer,
+                                       Context *on_finish) {
+  dout(20) << "peer=" << peer.uuid << dendl;
+  std::lock_guard locker{m_lock};
+  auto peer_it = m_peers.find(peer.uuid);
+  ceph_assert(peer_it != m_peers.end());
+
+  auto ctx = new LambdaContext([this, peer_it, on_finish](int r) {
+    handle_remove_peer(peer_it->second, r, on_finish);
+  });
+  if (m_instance_replayer) {
+    m_instance_replayer->remove_peer({peer_it->second.uuid,
+                                      peer_it->second.io_ctx,
+                                      peer_it->second.remote_pool_meta,
+                                      peer_it->second.status_updater}, ctx);
+  }
+}
+
+template <typename I>
+void NamespaceReplayer<I>::handle_remove_peer(const Peer<I>& peer, int r,
+                                              Context *on_finish) {
+  dout(10) << "peer=" << peer.uuid << dendl;
+  std::lock_guard locker{m_lock};
+  auto peer_it = m_peers.find(peer.uuid);
+  ceph_assert(peer_it != m_peers.end());
+  auto ctx = new LambdaContext([this, peer_it, on_finish](int r) {
+    std::lock_guard locker{m_lock};
+    auto size = m_peers.size();
+    m_peers.erase(peer_it);
+    ceph_assert(size != m_peers.size());
+    m_threads->work_queue->queue(on_finish, r);
+  });
+  ceph_assert(on_finish);
+  shut_down_remote_pool_watcher(peer_it->second.pool_watcher, ctx);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::shut_down_remote_pool_watcher(
+    PoolWatcher<I>* pool_watcher, Context *on_finish) {
+  dout(10) << dendl;
+
+  ceph_assert(ceph_mutex_is_locked(m_lock));
+  ceph_assert(pool_watcher);
+
+  auto ctx = new LambdaContext([this, pool_watcher, on_finish](int r) {
+    handle_shut_down_remote_pool_watcher(pool_watcher, r, on_finish);
+  });
+  pool_watcher->shut_down(ctx);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::handle_shut_down_remote_pool_watcher(
+    PoolWatcher<I>* pool_watcher, int r, Context *on_finish) {
+  dout(10) << "r=" << r << dendl;
+
+  if (r < 0) {
+    derr << "error shutting remote mirror pool watcher down: "
+         << cpp_strerror(r) << dendl;
+  }
+
+  std::lock_guard locker{m_lock};
+  delete pool_watcher;
+
+  ceph_assert(on_finish);
+  m_threads->work_queue->queue(on_finish);
 }
 
 } // namespace mirror

@@ -56,7 +56,6 @@ public:
 
 private:
   typedef ClusterWatcher::PoolPeers PoolPeers;
-  typedef std::pair<int64_t, PeerSpec> PoolPeer;
 
   void update_pool_replayers(const PoolPeers &pool_peers,
                              const std::string& site_name);
@@ -76,7 +75,7 @@ private:
   std::unique_ptr<ClusterWatcher> m_local_cluster_watcher;
   std::unique_ptr<CacheManagerHandler> m_cache_manager_handler;
   std::unique_ptr<PoolMetaCache> m_pool_meta_cache;
-  std::map<PoolPeer, std::unique_ptr<PoolReplayer<>>> m_pool_replayers;
+  std::map<int64_t, std::unique_ptr<PoolReplayer<>>> m_pool_replayers;
   std::atomic<bool> m_stopping = { false };
   bool m_manual_stop = false;
   MirrorAdminSocketHook *m_asok_hook;

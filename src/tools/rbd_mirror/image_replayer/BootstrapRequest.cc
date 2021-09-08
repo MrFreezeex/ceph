@@ -46,11 +46,10 @@ template <typename I>
 BootstrapRequest<I>::BootstrapRequest(
     Threads<I>* threads,
     librados::IoCtx& local_io_ctx,
-    librados::IoCtx& remote_io_ctx,
+    Peers peers,
     InstanceWatcher<I>* instance_watcher,
     const std::string& global_image_id,
     const std::string& local_mirror_uuid,
-    const RemotePoolMeta& remote_pool_meta,
     ::journal::CacheManagerHandler* cache_manager_handler,
     PoolMetaCache* pool_meta_cache,
     ProgressContext* progress_ctx,
@@ -62,11 +61,10 @@ BootstrapRequest<I>::BootstrapRequest(
                       on_finish),
     m_threads(threads),
     m_local_io_ctx(local_io_ctx),
-    m_remote_io_ctx(remote_io_ctx),
+    m_peers(peers),
     m_instance_watcher(instance_watcher),
     m_global_image_id(global_image_id),
     m_local_mirror_uuid(local_mirror_uuid),
-    m_remote_pool_meta(remote_pool_meta),
     m_cache_manager_handler(cache_manager_handler),
     m_pool_meta_cache(pool_meta_cache),
     m_progress_ctx(progress_ctx),
@@ -131,7 +129,8 @@ template <typename I>
 void BootstrapRequest<I>::handle_prepare_local_image(int r) {
   dout(10) << "r=" << r << dendl;
 
-  ceph_assert(r < 0 || *m_state_builder != nullptr);
+  auto state_builder = *m_state_builder;
+  ceph_assert(r < 0 || state_builder != nullptr);
   if (r == -ENOENT) {
     dout(10) << "local image does not exist" << dendl;
   } else if (r < 0) {
@@ -148,7 +147,18 @@ void BootstrapRequest<I>::handle_prepare_local_image(int r) {
     m_local_image_name = m_prepare_local_image_name;
   }
 
-  prepare_remote_image();
+  if (state_builder != nullptr && state_builder->is_local_primary()) {
+    dout(5) << "local image is primary" << dendl;
+    finish(-ENOMSG);
+    return;
+  }
+
+  m_it_peer = m_peers.begin();
+  if (m_it_peer != m_peers.end()) {
+      prepare_remote_image();
+  } else {
+    handle_prepare_remote_image(0);
+  }
 }
 
 template <typename I>
@@ -159,8 +169,8 @@ void BootstrapRequest<I>::prepare_remote_image() {
   Context *ctx = create_context_callback<
     BootstrapRequest, &BootstrapRequest<I>::handle_prepare_remote_image>(this);
   auto req = image_replayer::PrepareRemoteImageRequest<I>::create(
-    m_threads, m_local_io_ctx, m_remote_io_ctx, m_global_image_id,
-    m_local_mirror_uuid, m_remote_pool_meta, m_cache_manager_handler,
+    m_threads, m_local_io_ctx, m_it_peer->io_ctx, m_global_image_id,
+    m_local_mirror_uuid, m_it_peer->remote_pool_meta, m_cache_manager_handler,
     m_state_builder, ctx);
   req->send();
 }
@@ -173,49 +183,62 @@ void BootstrapRequest<I>::handle_prepare_remote_image(int r) {
   ceph_assert(state_builder == nullptr ||
               !state_builder->remote_mirror_uuid.empty());
 
-  if (state_builder != nullptr && state_builder->is_local_primary()) {
-    dout(5) << "local image is primary" << dendl;
-    finish(-ENOMSG);
-    return;
-  } else if (r == -EREMOTEIO) {
-    dout(10) << "remote-image is non-primary" << cpp_strerror(r) << dendl;
-    finish(r);
-    return;
+  if (r == -EREMOTEIO) {
+    dout(10) << "remote-image is non-primary" << cpp_strerror(r)
+             << ": peer=" << *m_it_peer << dendl;
+    ++m_it_peer;
+    if (m_it_peer != m_peers.end()) {
+      prepare_remote_image();
+      return;
+    }
+
+    goto no_primary;
   } else if (r == -ENOENT || state_builder == nullptr) {
-    dout(10) << "remote image does not exist";
+    dout(10) << "remote image does not exist: peer=" << *m_it_peer;
     if (state_builder != nullptr) {
-      *_dout << ": "
-             << "local_image_id=" << state_builder->local_image_id  << ", "
+      *_dout << ", local_image_id=" << state_builder->local_image_id  << ", "
              << "remote_image_id=" << state_builder->remote_image_id << ", "
              << "is_linked=" << state_builder->is_linked();
     }
     *_dout << dendl;
 
-    // TODO need to support multiple remote images
-    if (state_builder != nullptr &&
-        state_builder->remote_image_id.empty() &&
-        (state_builder->local_image_id.empty() ||
-         state_builder->is_linked())) {
-      // both images doesn't exist or local image exists and is non-primary
-      // and linked to the missing remote image
-      finish(-ENOLINK);
-    } else {
-      finish(-ENOENT);
+    if (m_it_peer != m_peers.end()) {
+      prepare_remote_image();
+      return;
     }
-    return;
+
+    goto no_primary;
   } else if (r < 0) {
     derr << "error retrieving remote image id" << cpp_strerror(r) << dendl;
     finish(r);
     return;
   }
 
+  state_builder->remote_image_peer = *m_it_peer;
   open_remote_image();
+  return;
+
+no_primary:
+  if (state_builder->local_image_id.empty() || state_builder->is_linked()) {
+    // There is no primary image and the local image doesn't exist or is
+    // linked to a missing remote image
+    finish(-ENOLINK);
+    return;
+  }
+
+  if (state_builder == nullptr) {
+    finish(-ENOENT);
+    return;
+  }
+
+  finish(r);
 }
 
 template <typename I>
 void BootstrapRequest<I>::open_remote_image() {
-  ceph_assert(*m_state_builder != nullptr);
-  auto remote_image_id = (*m_state_builder)->remote_image_id;
+  auto state_builder = *m_state_builder;
+  ceph_assert(state_builder != nullptr);
+  auto remote_image_id = state_builder->remote_image_id;
   dout(15) << "remote_image_id=" << remote_image_id << dendl;
 
   update_progress("OPEN_REMOTE_IMAGE");
@@ -223,10 +246,10 @@ void BootstrapRequest<I>::open_remote_image() {
   auto ctx = create_context_callback<
     BootstrapRequest<I>,
     &BootstrapRequest<I>::handle_open_remote_image>(this);
-  ceph_assert(*m_state_builder != nullptr);
+  ceph_assert(state_builder != nullptr);
   OpenImageRequest<I> *request = OpenImageRequest<I>::create(
-    m_remote_io_ctx, &(*m_state_builder)->remote_image_ctx, remote_image_id,
-    false, ctx);
+    state_builder->remote_image_peer.io_ctx, &state_builder->remote_image_ctx,
+    remote_image_id, false, ctx);
   request->send();
 }
 

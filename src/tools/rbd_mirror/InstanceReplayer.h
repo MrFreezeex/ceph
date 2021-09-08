@@ -29,6 +29,7 @@ template <typename> struct Threads;
 template <typename ImageCtxT = librbd::ImageCtx>
 class InstanceReplayer {
 public:
+  typedef std::set<Peer<ImageCtxT>> Peers;
   static InstanceReplayer* create(
       librados::IoCtx &local_io_ctx, const std::string &local_mirror_uuid,
       Threads<ImageCtxT> *threads, ServiceDaemon<ImageCtxT> *service_daemon,
@@ -61,6 +62,7 @@ public:
   void shut_down(Context *on_finish);
 
   void add_peer(const Peer<ImageCtxT>& peer);
+  void remove_peer(const Peer<ImageCtxT>& peer, Context *on_finish);
 
   void acquire_image(InstanceWatcher<ImageCtxT> *instance_watcher,
                      const std::string &global_image_id, Context *on_finish);
@@ -93,9 +95,6 @@ private:
    *
    * @endverbatim
    */
-
-  typedef std::set<Peer<ImageCtxT>> Peers;
-
   librados::IoCtx &m_local_io_ctx;
   std::string m_local_mirror_uuid;
   Threads<ImageCtxT> *m_threads;
@@ -116,7 +115,8 @@ private:
   void wait_for_ops();
   void handle_wait_for_ops(int r);
 
-  void start_image_replayer(ImageReplayer<ImageCtxT> *image_replayer);
+  void start_image_replayer(ImageReplayer<ImageCtxT> *image_replayer,
+                            Context *on_finish);
   void queue_start_image_replayers();
   void start_image_replayers(int r);
 

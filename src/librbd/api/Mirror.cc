@@ -220,11 +220,6 @@ int create_bootstrap_peer(CephContext* cct, librados::IoCtx& io_ctx,
                  << cluster2 << " " << "cluster: " << cpp_strerror(r) << dendl;
       return r;
     }
-  } else if (peers[0].site_name != site_name &&
-             peers[0].site_name != fsid) {
-    // only support a single peer
-    lderr(cct) << "multiple peers are not currently supported" << dendl;
-    return -EINVAL;
   } else {
     peer_uuid = peers[0].uuid;
 

@@ -7,6 +7,7 @@
 #include "include/rados/librados_fwd.hpp"
 #include "cls/rbd/cls_rbd_types.h"
 #include "librbd/mirror/Types.h"
+#include "tools/rbd_mirror/Types.h"
 
 struct Context;
 namespace librbd { struct ImageCtx; }
@@ -91,6 +92,7 @@ public:
   librbd::mirror::PromotionState remote_promotion_state =
     librbd::mirror::PROMOTION_STATE_NON_PRIMARY;
   ImageCtxT* remote_image_ctx = nullptr;
+  Peer<ImageCtxT> remote_image_peer;
 
 protected:
   image_sync::SyncPointHandler* m_sync_point_handler = nullptr;
