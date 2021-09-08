@@ -45,30 +45,22 @@ public:
   static NamespaceReplayer *create(
       const std::string &name,
       librados::IoCtx &local_ioctx,
-      librados::IoCtx &remote_ioctx,
       const std::string &local_mirror_uuid,
-      const std::string &local_mirror_peer_uuid,
-      const RemotePoolMeta& remote_pool_meta,
       Threads<ImageCtxT> *threads,
       Throttler<ImageCtxT> *image_sync_throttler,
       Throttler<ImageCtxT> *image_deletion_throttler,
       ServiceDaemon<ImageCtxT> *service_daemon,
       journal::CacheManagerHandler *cache_manager_handler,
       PoolMetaCache* pool_meta_cache) {
-    return new NamespaceReplayer(name, local_ioctx, remote_ioctx,
-                                 local_mirror_uuid, local_mirror_peer_uuid,
-                                 remote_pool_meta, threads,
-                                 image_sync_throttler, image_deletion_throttler,
-                                 service_daemon, cache_manager_handler,
-                                 pool_meta_cache);
+    return new NamespaceReplayer(name, local_ioctx, local_mirror_uuid,
+                                 threads, image_sync_throttler,
+                                 image_deletion_throttler, service_daemon,
+                                 cache_manager_handler, pool_meta_cache);
   }
 
   NamespaceReplayer(const std::string &name,
                     librados::IoCtx &local_ioctx,
-                    librados::IoCtx &remote_ioctx,
                     const std::string &local_mirror_uuid,
-                    const std::string& local_mirror_peer_uuid,
-                    const RemotePoolMeta& remote_pool_meta,
                     Threads<ImageCtxT> *threads,
                     Throttler<ImageCtxT> *image_sync_throttler,
                     Throttler<ImageCtxT> *image_deletion_throttler,
@@ -94,6 +86,10 @@ public:
   void stop();
   void restart();
   void flush();
+
+  void add_peer(const Peer<ImageCtxT>& peer, Context *on_finish);
+  void remove_peer(const Peer<ImageCtxT>& peer, Context *on_finish);
+  void handle_remove_peer(const Peer<ImageCtxT>& peer, int r, Context *on_finish);
 
 private:
   /**
@@ -145,7 +141,6 @@ private:
    *
    * @endverbatim
    */
-
   struct PoolWatcherListener : public pool_watcher::Listener {
     NamespaceReplayer *namespace_replayer;
     bool local;
@@ -207,9 +202,6 @@ private:
   void init_local_status_updater();
   void handle_init_local_status_updater(int r);
 
-  void init_remote_status_updater();
-  void handle_init_remote_status_updater(int r);
-
   void init_instance_replayer();
   void handle_init_instance_replayer(int r);
 
@@ -225,8 +217,6 @@ private:
   void shut_down_instance_replayer();
   void handle_shut_down_instance_replayer(int r);
 
-  void shut_down_remote_status_updater();
-  void handle_shut_down_remote_status_updater(int r);
 
   void shut_down_local_status_updater();
   void handle_shut_down_local_status_updater(int r);
@@ -238,8 +228,8 @@ private:
   void init_local_pool_watcher(Context *on_finish);
   void handle_init_local_pool_watcher(int r, Context *on_finish);
 
-  void init_remote_pool_watcher(Context *on_finish);
-  void handle_init_remote_pool_watcher(int r, Context *on_finish);
+  void init_remote_pool_watchers(Context *on_finish);
+  void handle_init_remote_pool_watchers(int r, Context *on_finish);
 
   void init_image_deleter(Context* on_finish);
   void handle_init_image_deleter(int r, Context* on_finish);
@@ -264,12 +254,29 @@ private:
                            const std::string &instance_id,
                            Context* on_finish);
 
+  void init_remote_status_updater(Peer<ImageCtxT>& peer, Context *on_finish);
+  void handle_init_remote_status_updater(Peer<ImageCtxT>& peer, int r,
+                                         Context *on_finish);
+
+  void init_remote_pool_watcher(Peer<ImageCtxT>& peer, Context *on_finish);
+  void handle_init_remote_pool_watcher(Peer<ImageCtxT>& peer, int r,
+                                       Context *on_finish);
+
+  void shut_down_remote_status_updater(Peer<ImageCtxT>& peer,
+                                       Context *on_finish);
+  void handle_shut_down_remote_status_updater(Peer<ImageCtxT>& peer,
+                                              int r, Context *on_finish);
+
+  void shut_down_remote_pool_watcher(PoolWatcher<ImageCtxT>* pool_watcher,
+                                     Context *on_finish);
+  void handle_shut_down_remote_pool_watcher(
+      PoolWatcher<ImageCtxT>* pool_watcher, int r, Context *on_finish);
+
   std::string m_namespace_name;
   librados::IoCtx m_local_io_ctx;
-  librados::IoCtx m_remote_io_ctx;
   std::string m_local_mirror_uuid;
   std::string m_local_mirror_peer_uuid;
-  RemotePoolMeta m_remote_pool_meta;
+  std::map<std::string, Peer<ImageCtxT>> m_peers;
   Threads<ImageCtxT> *m_threads;
   Throttler<ImageCtxT> *m_image_sync_throttler;
   Throttler<ImageCtxT> *m_image_deletion_throttler;
@@ -283,13 +290,11 @@ private:
   Context *m_on_finish = nullptr;
 
   std::unique_ptr<MirrorStatusUpdater<ImageCtxT>> m_local_status_updater;
-  std::unique_ptr<MirrorStatusUpdater<ImageCtxT>> m_remote_status_updater;
 
   PoolWatcherListener m_local_pool_watcher_listener;
   std::unique_ptr<PoolWatcher<ImageCtxT>> m_local_pool_watcher;
 
   PoolWatcherListener m_remote_pool_watcher_listener;
-  std::unique_ptr<PoolWatcher<ImageCtxT>> m_remote_pool_watcher;
 
   std::unique_ptr<InstanceReplayer<ImageCtxT>> m_instance_replayer;
   std::unique_ptr<ImageDeleter<ImageCtxT>> m_image_deleter;

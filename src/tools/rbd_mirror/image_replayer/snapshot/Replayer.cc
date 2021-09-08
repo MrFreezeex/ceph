@@ -140,7 +140,8 @@ void Replayer<I>::init(Context* on_finish) {
 
   RemotePoolMeta remote_pool_meta;
   int r = m_pool_meta_cache->get_remote_pool_meta(
-    m_state_builder->remote_image_ctx->md_ctx.get_id(), &remote_pool_meta);
+    m_state_builder->remote_image_ctx->md_ctx.get_id(),
+    m_state_builder->remote_image_peer.uuid, &remote_pool_meta);
   if (r < 0 || remote_pool_meta.mirror_peer_uuid.empty()) {
     derr << "failed to retrieve mirror peer uuid from remote pool" << dendl;
     m_state = STATE_COMPLETE;
@@ -496,7 +497,6 @@ void Replayer<I>::scan_local_mirror_snapshots(
     if (m_local_mirror_snap_ns.is_non_primary() &&
         m_local_mirror_snap_ns.primary_mirror_uuid !=
           m_state_builder->remote_mirror_uuid) {
-      // TODO support multiple peers
       derr << "local image linked to unknown peer: "
            << m_local_mirror_snap_ns.primary_mirror_uuid << dendl;
       handle_replay_complete(locker, -EEXIST,

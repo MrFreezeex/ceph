@@ -218,7 +218,7 @@ ImageReplayer<I>::ImageReplayer(
     InstanceWatcher<I> *instance_watcher,
     MirrorStatusUpdater<I>* local_status_updater,
     journal::CacheManagerHandler *cache_manager_handler,
-    PoolMetaCache* pool_meta_cache) :
+    PoolMetaCache* pool_meta_cache, Peers peers) :
   m_local_io_ctx(local_io_ctx), m_local_mirror_uuid(local_mirror_uuid),
   m_global_image_id(global_image_id), m_threads(threads),
   m_instance_watcher(instance_watcher),
@@ -229,7 +229,8 @@ ImageReplayer<I>::ImageReplayer(
   m_lock(ceph::make_mutex("rbd::mirror::ImageReplayer " +
       stringify(local_io_ctx.get_id()) + " " + global_image_id)),
   m_progress_cxt(this),
-  m_replayer_listener(new ReplayerListener(this))
+  m_replayer_listener(new ReplayerListener(this)),
+  m_peers(peers)
 {
   // Register asok commands using a temporary "remote_pool_name/global_image_id"
   // name.  When the image name becomes known on start the asok commands will be
@@ -272,10 +273,27 @@ void ImageReplayer<I>::add_peer(const Peer<I>& peer) {
   dout(10) << "peer=" << peer << dendl;
 
   std::lock_guard locker{m_lock};
-  auto it = m_peers.find(peer);
-  if (it == m_peers.end()) {
-    m_peers.insert(peer);
+  auto result = m_peers.insert(peer).second;
+  ceph_assert(result);
+}
+
+template <typename I>
+void ImageReplayer<I>::remove_peer(const Peer<I>& peer, Context *on_finish) {
+  dout(10) << "peer=" << peer << dendl;
+  std::lock_guard locker{m_lock};
+
+  auto size = m_peers.size();
+  m_peers.erase(peer);
+  ceph_assert(size != m_peers.size());
+
+  if (m_state_builder != nullptr &&
+      peer == m_state_builder->remote_image_peer) {
+    // If current peer is the current remote image peer restart the replay
+    restart(on_finish);
+    return;
   }
+
+  m_threads->work_queue->queue(on_finish, 0);
 }
 
 template <typename I>
@@ -345,10 +363,7 @@ void ImageReplayer<I>::bootstrap() {
     return;
   }
 
-  // TODO need to support multiple remote images
   ceph_assert(!m_peers.empty());
-  m_remote_image_peer = *m_peers.begin();
-
   if (on_start_interrupted(m_lock)) {
     return;
   }
@@ -357,11 +372,10 @@ void ImageReplayer<I>::bootstrap() {
   auto ctx = create_context_callback<
       ImageReplayer, &ImageReplayer<I>::handle_bootstrap>(this);
   auto request = image_replayer::BootstrapRequest<I>::create(
-      m_threads, m_local_io_ctx, m_remote_image_peer.io_ctx, m_instance_watcher,
-      m_global_image_id, m_local_mirror_uuid,
-      m_remote_image_peer.remote_pool_meta, m_cache_manager_handler,
-      m_pool_meta_cache, &m_progress_cxt, &m_state_builder, &m_resync_requested,
-      ctx);
+      m_threads, m_local_io_ctx, m_peers, m_instance_watcher,
+      m_global_image_id, m_local_mirror_uuid, m_cache_manager_handler,
+      m_pool_meta_cache, &m_progress_cxt, &m_state_builder,
+      &m_resync_requested, ctx);
 
   request->get();
   m_bootstrap_request = request;
@@ -376,6 +390,7 @@ void ImageReplayer<I>::handle_bootstrap(int r) {
   dout(10) << "r=" << r << dendl;
   {
     std::lock_guard locker{m_lock};
+    m_local_image_name = m_bootstrap_request->get_local_image_name();
     m_bootstrap_request->put();
     m_bootstrap_request = nullptr;
   }
@@ -866,8 +881,9 @@ void ImageReplayer<I>::set_mirror_image_status_update(
   dout(15) << "status=" << status << dendl;
   m_local_status_updater->set_mirror_image_status(m_global_image_id, status,
                                                   force);
-  if (m_remote_image_peer.mirror_status_updater != nullptr) {
-    m_remote_image_peer.mirror_status_updater->set_mirror_image_status(
+  if (m_state_builder != nullptr &&
+      m_state_builder->remote_image_peer.status_updater != nullptr) {
+    m_state_builder->remote_image_peer.status_updater->set_mirror_image_status(
       m_global_image_id, status, force);
   }
 
@@ -1121,7 +1137,7 @@ void ImageReplayer<I>::reregister_admin_socket_hook() {
            << "new_image_spec=" << image_spec << dendl;
   m_image_spec = image_spec;
 
-  if (m_state == STATE_STOPPING || m_state == STATE_STOPPED) {
+  if (m_state == STATE_STOPPED) {
     // no need to re-register if stopping
     return;
   }
@@ -1156,14 +1172,16 @@ void ImageReplayer<I>::remove_image_status(bool force, Context *on_finish)
 template <typename I>
 void ImageReplayer<I>::remove_image_status_remote(bool force, Context *on_finish)
 {
-  if (m_remote_image_peer.mirror_status_updater != nullptr &&
-      m_remote_image_peer.mirror_status_updater->exists(m_global_image_id)) {
+  if (m_state_builder != nullptr &&
+      m_state_builder->remote_image_peer.status_updater != nullptr &&
+      m_state_builder->remote_image_peer.status_updater->exists(
+        m_global_image_id)) {
     dout(15) << "removing remote mirror image status" << dendl;
     if (force) {
-      m_remote_image_peer.mirror_status_updater->remove_mirror_image_status(
-        m_global_image_id, true, on_finish);
+      m_state_builder->remote_image_peer.status_updater->remove_mirror_image_status(
+          m_global_image_id, true, on_finish);
     } else {
-      m_remote_image_peer.mirror_status_updater->remove_refresh_mirror_image_status(
+      m_state_builder->remote_image_peer.status_updater->remove_refresh_mirror_image_status(
         m_global_image_id, on_finish);
     }
     return;

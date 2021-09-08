@@ -48,12 +48,12 @@ void PoolMetaCache::remove_local_pool_meta(int64_t pool_id) {
 }
 
 int PoolMetaCache::get_remote_pool_meta(
-    int64_t pool_id,
+    int64_t pool_id, std::string peer_uuid,
     RemotePoolMeta* remote_pool_meta) const {
   dout(15) << "pool_id=" << pool_id << dendl;
 
   std::shared_lock locker{m_lock};
-  auto it = m_remote_pool_metas.find(pool_id);
+  auto it = m_remote_pool_metas.find({pool_id, peer_uuid});
   if (it == m_remote_pool_metas.end()) {
     return -ENOENT;
   }
@@ -63,20 +63,20 @@ int PoolMetaCache::get_remote_pool_meta(
 }
 
 void PoolMetaCache::set_remote_pool_meta(
-    int64_t pool_id,
+    int64_t pool_id, std::string peer_uuid,
     const RemotePoolMeta& remote_pool_meta) {
   dout(15) << "pool_id=" << pool_id << ", "
            << "remote_pool_meta=" << remote_pool_meta << dendl;
 
   std::unique_lock locker(m_lock);
-  m_remote_pool_metas[pool_id] = remote_pool_meta;
+  m_remote_pool_metas[{pool_id, peer_uuid}] = remote_pool_meta;
 }
 
-void PoolMetaCache::remove_remote_pool_meta(int64_t pool_id) {
+void PoolMetaCache::remove_remote_pool_meta(int64_t pool_id, std::string peer_uuid) {
   dout(15) << "pool_id=" << pool_id << dendl;
 
   std::unique_lock locker(m_lock);
-  m_remote_pool_metas.erase(pool_id);
+  m_remote_pool_metas.erase({pool_id, peer_uuid});
 }
 
 } // namespace mirror
