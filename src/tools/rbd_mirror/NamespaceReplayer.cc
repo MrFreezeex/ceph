@@ -571,6 +571,39 @@ void NamespaceReplayer<I>::handle_init_local_pool_watcher(
     return;
   }
 
+  init_remote_pool_watchers(on_finish);
+}
+
+template <typename I>
+void NamespaceReplayer<I>::init_remote_pool_watchers(Context *on_finish) {
+  dout(10) << dendl;
+  std::lock_guard locker{m_lock};
+
+  auto ctx = new LambdaContext([this, on_finish](int r) {
+    handle_init_remote_pool_watchers(r, on_finish);
+  });
+
+  C_Gather *gather_ctx = new C_Gather(g_ceph_context, ctx);
+  for (auto& kv : m_image_replayers) {
+    auto ctx = gather_ctx->new_sub();
+    init_remote_pool_watcher(kv.second);
+  }
+  gather_ctx->activate();
+}
+
+template <typename I>
+void NamespaceReplayer<I>::handle_init_remote_pool_watchers(
+    int r, Context *on_finish) {
+  dout(10) << dendl;
+
+  if (r < 0) {
+    derr << "failed to retrieve remote images: " << cpp_strerror(r) << dendl;
+    on_finish = new LambdaContext([on_finish, r](int) {
+      on_finish->complete(r);
+    });
+    return;
+  }
+
   init_image_deleter(on_finish);
 }
 
@@ -809,6 +842,12 @@ template <typename I>
 void NamespaceReplayer<I>::init_remote_pool_watcher(Peer<I>& peer,
                                                     Context *on_finish) {
   dout(10) << dendl;
+
+  if (!m_image_map) {
+    dout(10) << "not leader" << dendl;
+    m_threads->work_queue->queue(on_finish);
+    return;
+  }
 
   ceph_assert(ceph_mutex_is_locked(m_lock));
   ceph_assert(on_finish);
