@@ -584,7 +584,7 @@ void NamespaceReplayer<I>::init_remote_pool_watchers(Context *on_finish) {
   });
 
   C_Gather *gather_ctx = new C_Gather(g_ceph_context, ctx);
-  for (auto& kv : m_image_replayers) {
+  for (auto& kv : m_peers) {
     auto ctx = gather_ctx->new_sub();
     init_remote_pool_watcher(kv.second, ctx);
   }
