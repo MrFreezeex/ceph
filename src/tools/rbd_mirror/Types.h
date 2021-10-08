@@ -60,6 +60,9 @@ struct LocalPoolMeta {
   }
 
   std::string mirror_uuid;
+  bool operator==(const LocalPoolMeta& rhs) const {
+    return mirror_uuid == rhs.mirror_uuid;
+  }
 };
 
 std::ostream& operator<<(std::ostream& lhs,
@@ -75,6 +78,11 @@ struct RemotePoolMeta {
 
   std::string mirror_uuid;
   std::string mirror_peer_uuid;
+
+  bool operator==(const RemotePoolMeta& rhs) const {
+    return mirror_uuid == rhs.mirror_uuid &&
+           mirror_peer_uuid == rhs.mirror_peer_uuid;
+  }
 };
 
 std::ostream& operator<<(std::ostream& lhs,

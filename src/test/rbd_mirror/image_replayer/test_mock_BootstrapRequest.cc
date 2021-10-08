@@ -10,6 +10,7 @@
 #include "tools/rbd_mirror/image_replayer/OpenImageRequest.h"
 #include "tools/rbd_mirror/image_replayer/OpenLocalImageRequest.h"
 #include "tools/rbd_mirror/image_replayer/PrepareLocalImageRequest.h"
+#include "tools/rbd_mirror/PoolMetaCache.h"
 #include "tools/rbd_mirror/image_replayer/PrepareRemoteImageRequest.h"
 #include "tools/rbd_mirror/image_replayer/StateBuilder.h"
 #include "test/librados_test_stub/MockTestMemIoCtxImpl.h"
@@ -85,6 +86,32 @@ ImageSync<librbd::MockTestImageCtx>*
 template<>
 struct InstanceWatcher<librbd::MockTestImageCtx> {
 };
+
+template<>
+struct PoolMetaCache<librbd::MockTestImageCtx> {
+  static PoolMetaCache* s_instance;
+
+  MOCK_CONST_METHOD2(get_local_pool_meta, int(int64_t, LocalPoolMeta*));
+  MOCK_METHOD2(set_local_pool_meta, void(int64_t, const LocalPoolMeta&));
+  MOCK_METHOD1(remove_local_pool_meta, void(int64_t));
+
+  MOCK_CONST_METHOD3(get_remote_pool_meta, int(int64_t, const std::string&,
+                                               RemotePoolMeta*));
+  MOCK_METHOD3(set_remote_pool_meta, void(int64_t, const std::string&,
+                                          const RemotePoolMeta&));
+  MOCK_METHOD2(remove_remote_pool_meta, void(int64_t, const std::string&));
+
+  PoolMetaCache(CephContext* cct) {
+    ceph_assert(s_instance == nullptr);
+    s_instance = this;
+  }
+  ~PoolMetaCache() {
+    s_instance = nullptr;
+  }
+};
+
+PoolMetaCache<librbd::MockTestImageCtx>* PoolMetaCache<librbd::MockTestImageCtx>::s_instance = nullptr;
+
 
 namespace image_replayer {
 
@@ -216,6 +243,7 @@ struct StateBuilder<librbd::MockTestImageCtx> {
   std::string local_image_id;
   std::string remote_mirror_uuid;
   std::string remote_image_id;
+  Peer<librbd::MockTestImageCtx> remote_image_peer;
 
   static StateBuilder* create(const std::string&) {
     ceph_assert(s_instance != nullptr);
@@ -241,7 +269,7 @@ struct StateBuilder<librbd::MockTestImageCtx> {
                BaseRequest*(Threads<librbd::MockTestImageCtx>*,
                             librados::IoCtx&,
                             const std::string&,
-                            PoolMetaCache*,
+                            PoolMetaCache<librbd::MockTestImageCtx>*,
                             ProgressContext*,
                             Context*));
   MOCK_METHOD5(create_prepare_replay_request,
@@ -297,6 +325,7 @@ public:
   typedef BootstrapRequest<librbd::MockTestImageCtx> MockBootstrapRequest;
   typedef ImageSync<librbd::MockTestImageCtx> MockImageSync;
   typedef InstanceWatcher<librbd::MockTestImageCtx> MockInstanceWatcher;
+  typedef PoolMetaCache<librbd::MockTestImageCtx> MockPoolMetaCache;
   typedef OpenImageRequest<librbd::MockTestImageCtx> MockOpenImageRequest;
   typedef OpenLocalImageRequest<librbd::MockTestImageCtx> MockOpenLocalImageRequest;
   typedef PrepareLocalImageRequest<librbd::MockTestImageCtx> MockPrepareLocalImageRequest;
@@ -457,15 +486,14 @@ public:
                                        MockInstanceWatcher *mock_instance_watcher,
                                        const std::string &global_image_id,
                                        const std::string &local_mirror_uuid,
+                                       MockBootstrapRequest::Peers peers,
                                        Context *on_finish) {
     return new MockBootstrapRequest(mock_threads,
                                     m_local_io_ctx,
-                                    m_remote_io_ctx,
+                                    peers,
                                     mock_instance_watcher,
                                     global_image_id,
                                     local_mirror_uuid,
-                                    {"remote mirror uuid",
-                                     "remote mirror peer uuid"},
                                     nullptr, nullptr, nullptr,
                                     &m_mock_state_builder,
                                     &m_do_resync, on_finish);
@@ -518,7 +546,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, Success) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }
@@ -560,7 +589,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, OpenLocalImageError) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(-EINVAL, ctx.wait());
 }
@@ -613,7 +643,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, OpenLocalImageDNE) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }
@@ -655,7 +686,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, OpenLocalImagePrimary) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(-EREMOTEIO, ctx.wait());
 }
@@ -693,7 +725,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, CreateLocalImageError) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(-EINVAL, ctx.wait());
 }
@@ -737,7 +770,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareReplayError) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(-EINVAL, ctx.wait());
 }
@@ -781,7 +815,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareReplayResyncRequested) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
   ASSERT_TRUE(m_do_resync);
@@ -831,7 +866,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareReplaySyncing) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }
@@ -876,7 +912,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareReplayDisconnected) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }
@@ -925,7 +962,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, ImageSyncError) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(-EINVAL, ctx.wait());
 }
@@ -970,7 +1008,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, ImageSyncCanceled) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->cancel();
   request->send();
   ASSERT_EQ(-ECANCELED, ctx.wait());
@@ -1016,7 +1055,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, CloseRemoteImageError) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }
@@ -1060,7 +1100,8 @@ TEST_F(TestMockImageReplayerBootstrapRequest, ReplayRequiresRemoteImage) {
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }

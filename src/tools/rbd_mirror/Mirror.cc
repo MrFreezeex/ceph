@@ -486,7 +486,7 @@ Mirror::Mirror(CephContext *cct, const std::vector<const char*> &args) :
   m_args(args),
   m_local(new librados::Rados()),
   m_cache_manager_handler(new CacheManagerHandler(cct)),
-  m_pool_meta_cache(new PoolMetaCache(cct)),
+  m_pool_meta_cache(new PoolMetaCache<librbd::ImageCtx>(cct)),
   m_asok_hook(new MirrorAdminSocketHook(cct, this)) {
 }
 

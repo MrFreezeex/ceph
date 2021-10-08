@@ -28,7 +28,7 @@ template <typename> struct ServiceDaemon;
 template <typename> struct Threads;
 class CacheManagerHandler;
 class MirrorAdminSocketHook;
-class PoolMetaCache;
+template <typename> class PoolMetaCache;
 
 /**
  * Contains the main loop and overall state for rbd-mirror.
@@ -74,7 +74,7 @@ private:
   // monitor local cluster for config changes in peers
   std::unique_ptr<ClusterWatcher> m_local_cluster_watcher;
   std::unique_ptr<CacheManagerHandler> m_cache_manager_handler;
-  std::unique_ptr<PoolMetaCache> m_pool_meta_cache;
+  std::unique_ptr<PoolMetaCache<librbd::ImageCtx>> m_pool_meta_cache;
   std::map<int64_t, std::unique_ptr<PoolReplayer<>>> m_pool_replayers;
   std::atomic<bool> m_stopping = { false };
   bool m_manual_stop = false;

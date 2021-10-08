@@ -52,7 +52,7 @@ BootstrapRequest<I>::BootstrapRequest(
     const std::string& global_image_id,
     const std::string& local_mirror_uuid,
     ::journal::CacheManagerHandler* cache_manager_handler,
-    PoolMetaCache* pool_meta_cache,
+    PoolMetaCache<I>* pool_meta_cache,
     ProgressContext* progress_ctx,
     StateBuilder<I>** state_builder,
     bool* do_resync,

@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-;
 // vim: ts=8 sw=2 smarttab
 
 #include "librbd/api/Config.h"
@@ -131,16 +131,13 @@ struct NamespaceReplayer<librbd::MockTestImageCtx> {
   static NamespaceReplayer *create(
       const std::string &name,
       librados::IoCtx &local_ioctx,
-      librados::IoCtx &remote_ioctx,
       const std::string &local_mirror_uuid,
-      const std::string& local_mirror_peer_uuid,
-      const RemotePoolMeta& remote_pool_meta,
       Threads<librbd::MockTestImageCtx> *threads,
       Throttler<librbd::MockTestImageCtx> *image_sync_throttler,
       Throttler<librbd::MockTestImageCtx> *image_deletion_throttler,
       ServiceDaemon<librbd::MockTestImageCtx> *service_daemon,
       journal::CacheManagerHandler *cache_manager_handler,
-      PoolMetaCache* pool_meta_cache) {
+      PoolMetaCache<librbd::MockTestImageCtx>* pool_meta_cache) {
     ceph_assert(s_instances.count(name));
     auto namespace_replayer = s_instances[name];
     s_instances.erase(name);
@@ -158,6 +155,10 @@ struct NamespaceReplayer<librbd::MockTestImageCtx> {
   MOCK_METHOD1(handle_update_leader, void(const std::string &));
   MOCK_METHOD1(handle_instances_added, void(const std::vector<std::string> &));
   MOCK_METHOD1(handle_instances_removed, void(const std::vector<std::string> &));
+  MOCK_METHOD2(add_peer, void(const Peer<librbd::MockTestImageCtx> &,
+                              Context *));
+  MOCK_METHOD2(remove_peer, void(const Peer<librbd::MockTestImageCtx> &,
+                                 Context *));
 
   MOCK_METHOD1(print_status, void(Formatter*));
   MOCK_METHOD0(start, void());
@@ -205,26 +206,51 @@ struct LeaderWatcher<librbd::MockTestImageCtx> {
 LeaderWatcher<librbd::MockTestImageCtx>* LeaderWatcher<librbd::MockTestImageCtx>::s_instance = nullptr;
 
 template<>
+struct PoolMetaCache<librbd::MockTestImageCtx> {
+  static PoolMetaCache* s_instance;
+
+  MOCK_CONST_METHOD2(get_local_pool_meta, int(int64_t, LocalPoolMeta*));
+  MOCK_METHOD2(set_local_pool_meta, void(int64_t, const LocalPoolMeta&));
+  MOCK_METHOD1(remove_local_pool_meta, void(int64_t));
+
+  MOCK_CONST_METHOD3(get_remote_pool_meta, int(int64_t, const std::string&,
+                                               RemotePoolMeta*));
+  MOCK_METHOD3(set_remote_pool_meta, void(int64_t, const std::string&,
+                                          const RemotePoolMeta&));
+  MOCK_METHOD2(remove_remote_pool_meta, void(int64_t, const std::string&));
+
+  PoolMetaCache(CephContext* cct) {
+    ceph_assert(s_instance == nullptr);
+    s_instance = this;
+  }
+};
+
+PoolMetaCache<librbd::MockTestImageCtx>* PoolMetaCache<librbd::MockTestImageCtx>::s_instance = nullptr;
+
+template<>
 struct RemotePoolPoller<librbd::MockTestImageCtx> {
   static RemotePoolPoller* s_instance;
 
   remote_pool_poller::Listener* listener = nullptr;
+  PeerSpec peer_spec;
 
   static RemotePoolPoller* create(
       Threads<librbd::MockTestImageCtx>* threads,
       librados::IoCtx& remote_io_ctx,
       const std::string& local_site_name,
       const std::string& local_mirror_uuid,
-      remote_pool_poller::Listener& listener) {
+      remote_pool_poller::Listener& listener,
+      const PeerSpec& peer_spec) {
     ceph_assert(s_instance != nullptr);
     s_instance->listener = &listener;
+    s_instance->peer_spec = peer_spec;
     return s_instance;
   }
 
   MOCK_METHOD1(init, void(Context*));
   MOCK_METHOD1(shut_down, void(Context*));
 
-  RemotePoolPoller() {
+  RemotePoolPoller(const PeerSpec& peer_spec) : peer_spec(peer_spec) {
     s_instance = this;
   }
 };
@@ -291,6 +317,7 @@ public:
   typedef PoolReplayer<librbd::MockTestImageCtx> MockPoolReplayer;
   typedef Throttler<librbd::MockTestImageCtx> MockThrottler;
   typedef NamespaceReplayer<librbd::MockTestImageCtx> MockNamespaceReplayer;
+  typedef PoolMetaCache<librbd::MockTestImageCtx> MockPoolMetaCache;
   typedef RemotePoolPoller<librbd::MockTestImageCtx> MockRemotePoolPoller;
   typedef LeaderWatcher<librbd::MockTestImageCtx> MockLeaderWatcher;
   typedef ServiceDaemon<librbd::MockTestImageCtx> MockServiceDaemon;
@@ -387,14 +414,17 @@ public:
 
   void expect_remote_pool_poller_init(
       MockRemotePoolPoller& mock_remote_pool_poller,
-      const RemotePoolMeta& remote_pool_meta, int r) {
+      const RemotePoolMeta& remote_pool_meta, const PeerSpec& peer_spec,
+      int r) {
     EXPECT_CALL(mock_remote_pool_poller, init(_))
       .WillOnce(Invoke(
-                  [this, &mock_remote_pool_poller, remote_pool_meta, r]
+                  [this, &mock_remote_pool_poller, remote_pool_meta,
+                   peer_spec, r]
                   (Context* ctx) {
+                    ceph_assert(mock_remote_pool_poller.peer_spec == peer_spec);
                     if (r >= 0) {
                       mock_remote_pool_poller.listener->handle_updated(
-                        remote_pool_meta);
+                        remote_pool_meta, peer_spec);
                     }
 
                     m_threads->work_queue->queue(ctx, r);
@@ -533,11 +563,54 @@ public:
         mock_service_daemon, "instance_id", {instance_id});
   }
 
-  PoolMetaCache m_pool_meta_cache{g_ceph_context};
+  void expect_namespace_replayer_add_peer(
+      MockNamespaceReplayer& mock_namespace_replayer, int r) {
+    EXPECT_CALL(mock_namespace_replayer, add_peer(_, _))
+      .WillOnce(Invoke(
+          [this, r](const rbd::mirror::Peer<librbd::MockTestImageCtx>&,
+                    Context* ctx) {
+        m_threads->work_queue->queue(ctx, r);
+      }));
+  }
+
+  void expect_remote_pool_meta_cache_get(
+      MockPoolMetaCache& mock_pool_meta_cache, const std::string& peer_uuid,
+      const RemotePoolMeta& expected_meta, int r) {
+    EXPECT_CALL(mock_pool_meta_cache, get_remote_pool_meta(_, peer_uuid, _))
+      .WillOnce(Invoke(
+          [this, expected_meta, r](int64_t, const std::string&,
+                                RemotePoolMeta* remote_pool_meta) {
+        *remote_pool_meta = expected_meta;
+        return r;
+      }));
+  }
+
+  void expect_remote_pool_meta_cache_set(
+      MockPoolMetaCache& mock_pool_meta_cache, const std::string& peer_uuid,
+      const RemotePoolMeta& remote_pool_meta) {
+    EXPECT_CALL(mock_pool_meta_cache, set_remote_pool_meta(_, peer_uuid,
+                                                           remote_pool_meta));
+  }
+
+  void expect_local_pool_meta_cache_set(
+      MockPoolMetaCache& mock_pool_meta_cache,
+      const LocalPoolMeta& local_pool_meta) {
+    EXPECT_CALL(mock_pool_meta_cache, set_local_pool_meta(_, local_pool_meta));
+  }
+
+  void expect_local_pool_meta_cache_remove(
+      MockPoolMetaCache& mock_pool_meta_cache) {
+    EXPECT_CALL(mock_pool_meta_cache, remove_local_pool_meta(_));
+  }
+
+  void expect_remote_pool_meta_cache_remove(
+      MockPoolMetaCache& mock_pool_meta_cache, const std::string& peer_uuid) {
+    EXPECT_CALL(mock_pool_meta_cache, remove_remote_pool_meta(_, peer_uuid));
+  }
 };
 
 TEST_F(TestMockPoolReplayer, ConfigKeyOverride) {
-  PeerSpec peer_spec{"uuid", "cluster name", "client.name"};
+  PeerSpec peer_spec{"peer uuid", "cluster name", "client.name"};
   peer_spec.mon_host = "123";
   peer_spec.key = "234";
 
@@ -559,21 +632,28 @@ TEST_F(TestMockPoolReplayer, ConfigKeyOverride) {
     g_ceph_context);
   expect_connect(mock_cluster, mock_local_rados_client, "ceph", nullptr);
 
+  auto mock_local_io_ctx = mock_local_rados_client->do_create_ioctx(
+    m_local_io_ctx.get_id(), m_local_io_ctx.get_pool_name());
+  expect_create_ioctx(mock_local_rados_client, mock_local_io_ctx);
+  expect_mirror_uuid_get(mock_local_io_ctx, "uuid", 0);
+
   auto mock_remote_rados_client = mock_cluster.do_create_rados_client(
     g_ceph_context);
   CephContext* remote_cct = nullptr;
   expect_connect(mock_cluster, mock_remote_rados_client, "cluster name",
                  &remote_cct);
-
-  auto mock_local_io_ctx = mock_local_rados_client->do_create_ioctx(
-    m_local_io_ctx.get_id(), m_local_io_ctx.get_pool_name());
-  expect_create_ioctx(mock_local_rados_client, mock_local_io_ctx);
-
-  expect_mirror_uuid_get(mock_local_io_ctx, "uuid", 0);
-  auto mock_remote_pool_poller = new MockRemotePoolPoller();
+  auto mock_remote_pool_poller = new MockRemotePoolPoller(peer_spec);
   expect_remote_pool_poller_init(*mock_remote_pool_poller,
-                                 {"remote mirror uuid", ""}, 0);
+                                 {"remote mirror uuid", ""}, peer_spec, 0);
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
+  expect_remote_pool_meta_cache_set(mock_pool_meta_cache, "peer uuid",
+                                    {"remote mirror uuid", ""});
+  expect_remote_pool_meta_cache_get(mock_pool_meta_cache, "peer uuid",
+                                    {"remote mirror uuid", ""}, 0);
+  expect_local_pool_meta_cache_set(mock_pool_meta_cache,
+                                   {"uuid"});
   expect_namespace_replayer_init(*mock_default_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_default_namespace_replayer, 0);
   expect_leader_watcher_init(*mock_leader_watcher, 0);
 
   MockServiceDaemon mock_service_daemon;
@@ -582,8 +662,8 @@ TEST_F(TestMockPoolReplayer, ConfigKeyOverride) {
     mock_service_daemon, instance_id);
 
   MockPoolReplayer pool_replayer(&mock_threads, &mock_service_daemon, nullptr,
-                                 &m_pool_meta_cache,
-                                 m_local_io_ctx.get_id(), peer_spec, {});
+                                 &mock_pool_meta_cache,
+                                 m_local_io_ctx.get_id(), {peer_spec}, {});
   pool_replayer.init("siteA");
 
   ASSERT_TRUE(remote_cct != nullptr);
@@ -593,7 +673,10 @@ TEST_F(TestMockPoolReplayer, ConfigKeyOverride) {
 
   expect_leader_watcher_shut_down(*mock_leader_watcher);
   expect_namespace_replayer_shut_down(*mock_default_namespace_replayer);
+  expect_local_pool_meta_cache_remove(mock_pool_meta_cache);
   expect_remote_pool_poller_shut_down(*mock_remote_pool_poller, 0);
+  expect_remote_pool_meta_cache_remove(mock_pool_meta_cache, "peer uuid");
+  expect_local_pool_meta_cache_remove(mock_pool_meta_cache);
 
   pool_replayer.shut_down();
 }
@@ -622,20 +705,21 @@ TEST_F(TestMockPoolReplayer, AcquireReleaseLeader) {
     g_ceph_context);
   expect_connect(mock_cluster, mock_local_rados_client, "ceph", nullptr);
 
+  auto mock_local_io_ctx = mock_local_rados_client->do_create_ioctx(
+    m_local_io_ctx.get_id(), m_local_io_ctx.get_pool_name());
+  expect_create_ioctx(mock_local_rados_client, mock_local_io_ctx);
+  expect_mirror_uuid_get(mock_local_io_ctx, "uuid", 0);
+
   auto mock_remote_rados_client = mock_cluster.do_create_rados_client(
     g_ceph_context);
   expect_connect(mock_cluster, mock_remote_rados_client, "cluster name",
                  nullptr);
 
-  auto mock_local_io_ctx = mock_local_rados_client->do_create_ioctx(
-    m_local_io_ctx.get_id(), m_local_io_ctx.get_pool_name());
-  expect_create_ioctx(mock_local_rados_client, mock_local_io_ctx);
-
-  expect_mirror_uuid_get(mock_local_io_ctx, "uuid", 0);
-  auto mock_remote_pool_poller = new MockRemotePoolPoller();
+  auto mock_remote_pool_poller = new MockRemotePoolPoller(peer_spec);
   expect_remote_pool_poller_init(*mock_remote_pool_poller,
-                                 {"remote mirror uuid", ""}, 0);
+                                 {"remote mirror uuid", ""}, peer_spec, 0);
   expect_namespace_replayer_init(*mock_default_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_default_namespace_replayer, 0);
   expect_leader_watcher_init(*mock_leader_watcher, 0);
 
   MockServiceDaemon mock_service_daemon;
@@ -643,9 +727,10 @@ TEST_F(TestMockPoolReplayer, AcquireReleaseLeader) {
   expect_service_daemon_add_or_update_instance_id_attribute(
     mock_service_daemon, instance_id);
 
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
   MockPoolReplayer pool_replayer(&mock_threads, &mock_service_daemon, nullptr,
-                                 &m_pool_meta_cache,
-                                 m_local_io_ctx.get_id(), peer_spec, {});
+                                 &mock_pool_meta_cache,
+                                 m_local_io_ctx.get_id(), {peer_spec}, {});
   pool_replayer.init("siteA");
 
   expect_service_daemon_add_or_update_attribute(
@@ -716,14 +801,15 @@ TEST_F(TestMockPoolReplayer, Namespaces) {
   InSequence seq;
 
   expect_connect(mock_cluster, mock_local_rados_client, "ceph", nullptr);
-  expect_connect(mock_cluster, mock_remote_rados_client, "cluster name",
-                 nullptr);
   expect_create_ioctx(mock_local_rados_client, mock_local_io_ctx);
   expect_mirror_uuid_get(mock_local_io_ctx, "uuid", 0);
-  auto mock_remote_pool_poller = new MockRemotePoolPoller();
+  expect_connect(mock_cluster, mock_remote_rados_client, "cluster name",
+                 nullptr);
+  auto mock_remote_pool_poller = new MockRemotePoolPoller(peer_spec);
   expect_remote_pool_poller_init(*mock_remote_pool_poller,
-                                 {"remote mirror uuid", ""}, 0);
+                                 {"remote mirror uuid", ""}, peer_spec, 0);
   expect_namespace_replayer_init(*mock_default_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_default_namespace_replayer, 0);
   expect_leader_watcher_init(*mock_leader_watcher, 0);
 
   MockServiceDaemon mock_service_daemon;
@@ -731,13 +817,15 @@ TEST_F(TestMockPoolReplayer, Namespaces) {
   expect_service_daemon_add_or_update_instance_id_attribute(
     mock_service_daemon, instance_id);
 
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
   MockPoolReplayer pool_replayer(&mock_threads, &mock_service_daemon, nullptr,
-                                 &m_pool_meta_cache,
-                                 m_local_io_ctx.get_id(), peer_spec, {});
+                                 &mock_pool_meta_cache,
+                                 m_local_io_ctx.get_id(), {peer_spec}, {});
   pool_replayer.init("siteA");
 
   C_SaferCond on_ns1_init;
   expect_namespace_replayer_init(*mock_ns1_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_ns1_namespace_replayer, 0);
   expect_service_daemon_add_namespace(mock_service_daemon, "ns1");
   expect_namespace_replayer_handle_update_leader(*mock_ns1_namespace_replayer,
                                                  "", &on_ns1_init);
@@ -757,6 +845,7 @@ TEST_F(TestMockPoolReplayer, Namespaces) {
   ASSERT_EQ(0, on_acquire.wait());
 
   expect_namespace_replayer_init(*mock_ns2_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_ns2_namespace_replayer, 0);
   expect_service_daemon_add_namespace(mock_service_daemon, "ns2");
   C_SaferCond on_ns2_acquire;
   expect_namespace_replayer_handle_acquire_leader(
@@ -834,14 +923,15 @@ TEST_F(TestMockPoolReplayer, NamespacesError) {
   InSequence seq;
 
   expect_connect(mock_cluster, mock_local_rados_client, "ceph", nullptr);
-  expect_connect(mock_cluster, mock_remote_rados_client, "cluster name",
-                 nullptr);
   expect_create_ioctx(mock_local_rados_client, mock_local_io_ctx);
   expect_mirror_uuid_get(mock_local_io_ctx, "uuid", 0);
-  auto mock_remote_pool_poller = new MockRemotePoolPoller();
+  expect_connect(mock_cluster, mock_remote_rados_client, "cluster name",
+                 nullptr);
+  auto mock_remote_pool_poller = new MockRemotePoolPoller(peer_spec);
   expect_remote_pool_poller_init(*mock_remote_pool_poller,
-                                 {"remote mirror uuid", ""}, 0);
+                                 {"remote mirror uuid", ""}, peer_spec, 0);
   expect_namespace_replayer_init(*mock_default_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_default_namespace_replayer, 0);
   expect_leader_watcher_init(*mock_leader_watcher, 0);
 
   MockServiceDaemon mock_service_daemon;
@@ -849,9 +939,10 @@ TEST_F(TestMockPoolReplayer, NamespacesError) {
   expect_service_daemon_add_or_update_instance_id_attribute(
     mock_service_daemon, instance_id);
 
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
   MockPoolReplayer pool_replayer(&mock_threads, &mock_service_daemon, nullptr,
-                                 &m_pool_meta_cache,
-                                 m_local_io_ctx.get_id(), peer_spec, {});
+                                 &mock_pool_meta_cache,
+                                 m_local_io_ctx.get_id(), {peer_spec}, {});
   pool_replayer.init("siteA");
 
   // test namespace replayer init fails for non leader
@@ -863,6 +954,7 @@ TEST_F(TestMockPoolReplayer, NamespacesError) {
         on_ns1_init.complete(r);
       });
   expect_namespace_replayer_init(*mock_ns1_namespace_replayer, -EINVAL, ctx);
+  expect_namespace_replayer_add_peer(*mock_ns1_namespace_replayer, 0);
   mock_namespace.add("ns1");
   ASSERT_EQ(-EINVAL, on_ns1_init.wait());
 
@@ -881,6 +973,7 @@ TEST_F(TestMockPoolReplayer, NamespacesError) {
 
   C_SaferCond on_ns2_init;
   expect_namespace_replayer_init(*mock_ns2_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_ns2_namespace_replayer, 0);
   expect_service_daemon_add_namespace(mock_service_daemon, "ns2");
   expect_namespace_replayer_handle_update_leader(*mock_ns2_namespace_replayer,
                                                  "", &on_ns2_init);
@@ -915,6 +1008,7 @@ TEST_F(TestMockPoolReplayer, NamespacesError) {
         on_ns3_shut_down.complete(0);
       });
   expect_namespace_replayer_init(*mock_ns3_namespace_replayer, 0);
+  expect_namespace_replayer_add_peer(*mock_ns3_namespace_replayer, 0);
   expect_service_daemon_add_namespace(mock_service_daemon, "ns3");
   expect_namespace_replayer_handle_acquire_leader(*mock_ns3_namespace_replayer,
                                                   -EINVAL);

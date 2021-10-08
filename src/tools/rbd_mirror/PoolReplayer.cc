@@ -227,7 +227,7 @@ template <typename I>
 PoolReplayer<I>::PoolReplayer(
     Threads<I> *threads, ServiceDaemon<I> *service_daemon,
     journal::CacheManagerHandler *cache_manager_handler,
-    PoolMetaCache* pool_meta_cache, int64_t local_pool_id,
+    PoolMetaCache<I>* pool_meta_cache, int64_t local_pool_id,
     const Peers &peers, const std::vector<const char*> &args) :
   m_threads(threads),
   m_service_daemon(service_daemon),
@@ -542,6 +542,7 @@ void PoolReplayer<I>::shut_down() {
     on_shut_down.wait();
   }
   m_default_namespace_replayer.reset();
+  cout << "hey\n";
   m_pool_meta_cache->remove_local_pool_meta(m_local_io_ctx.get_id());
 
   for (auto& kv : m_remote_peers_ressource) {

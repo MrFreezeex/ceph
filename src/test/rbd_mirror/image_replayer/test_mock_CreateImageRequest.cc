@@ -126,6 +126,31 @@ struct Threads<librbd::MockTestImageCtx> {
   }
 };
 
+template<>
+struct PoolMetaCache<librbd::MockTestImageCtx> {
+  static PoolMetaCache* s_instance;
+
+  MOCK_CONST_METHOD2(get_local_pool_meta, int(int64_t, LocalPoolMeta*));
+  MOCK_METHOD2(set_local_pool_meta, void(int64_t, const LocalPoolMeta&));
+  MOCK_METHOD1(remove_local_pool_meta, void(int64_t));
+
+  MOCK_CONST_METHOD3(get_remote_pool_meta, int(int64_t, const std::string&,
+                                               RemotePoolMeta*));
+  MOCK_METHOD3(set_remote_pool_meta, void(int64_t, const std::string&,
+                                          const RemotePoolMeta&));
+  MOCK_METHOD2(remove_remote_pool_meta, void(int64_t, const std::string&));
+
+  PoolMetaCache(CephContext* cct) {
+    ceph_assert(s_instance == nullptr);
+    s_instance = this;
+  }
+  ~PoolMetaCache() {
+    s_instance = nullptr;
+  }
+};
+
+PoolMetaCache<librbd::MockTestImageCtx>* PoolMetaCache<librbd::MockTestImageCtx>::s_instance = nullptr;
+
 namespace image_replayer {
 
 template<>
@@ -215,6 +240,7 @@ MATCHER_P(IsSameIoCtx, io_ctx, "") {
 class TestMockImageReplayerCreateImageRequest : public TestMockFixture {
 public:
   typedef Threads<librbd::MockTestImageCtx> MockThreads;
+  typedef PoolMetaCache<librbd::MockTestImageCtx> MockPoolMetaCache;
   typedef librbd::image::CreateRequest<librbd::MockTestImageCtx> MockCreateRequest;
   typedef librbd::image::CloneRequest<librbd::MockTestImageCtx> MockCloneRequest;
   typedef CreateImageRequest<librbd::MockTestImageCtx> MockCreateImageRequest;
@@ -348,7 +374,7 @@ public:
                                       on_finish);
   }
 
-  PoolMetaCache m_pool_meta_cache{g_ceph_context};
+  MockPoolMetaCache m_pool_meta_cache{g_ceph_context};
   librbd::ImageCtx *m_remote_image_ctx;
 };
 

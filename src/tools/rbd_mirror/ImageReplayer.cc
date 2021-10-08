@@ -218,7 +218,7 @@ ImageReplayer<I>::ImageReplayer(
     InstanceWatcher<I> *instance_watcher,
     MirrorStatusUpdater<I>* local_status_updater,
     journal::CacheManagerHandler *cache_manager_handler,
-    PoolMetaCache* pool_meta_cache, Peers peers) :
+    PoolMetaCache<I>* pool_meta_cache, Peers peers) :
   m_local_io_ctx(local_io_ctx), m_local_mirror_uuid(local_mirror_uuid),
   m_global_image_id(global_image_id), m_threads(threads),
   m_instance_watcher(instance_watcher),

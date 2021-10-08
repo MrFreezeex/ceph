@@ -39,7 +39,7 @@ InstanceReplayer<I>::InstanceReplayer(
     Threads<I> *threads, ServiceDaemon<I>* service_daemon,
     MirrorStatusUpdater<I>* local_status_updater,
     journal::CacheManagerHandler *cache_manager_handler,
-    PoolMetaCache* pool_meta_cache)
+    PoolMetaCache<I>* pool_meta_cache)
   : m_local_io_ctx(local_io_ctx), m_local_mirror_uuid(local_mirror_uuid),
     m_threads(threads), m_service_daemon(service_daemon),
     m_local_status_updater(local_status_updater),

@@ -26,7 +26,7 @@ class ProgressContext;
 
 template <typename> class ImageSync;
 template <typename> class InstanceWatcher;
-struct PoolMetaCache;
+template <typename> struct PoolMetaCache;
 template <typename> struct Threads;
 
 namespace image_replayer {
@@ -47,7 +47,7 @@ public:
       const std::string& global_image_id,
       const std::string& local_mirror_uuid,
       ::journal::CacheManagerHandler* cache_manager_handler,
-      PoolMetaCache* pool_meta_cache,
+      PoolMetaCache<ImageCtxT>* pool_meta_cache,
       ProgressContext* progress_ctx,
       StateBuilder<ImageCtxT>** state_builder,
       bool* do_resync,
@@ -66,7 +66,7 @@ public:
       const std::string& global_image_id,
       const std::string& local_mirror_uuid,
       ::journal::CacheManagerHandler* cache_manager_handler,
-      PoolMetaCache* pool_meta_cache,
+      PoolMetaCache<ImageCtxT>* pool_meta_cache,
       ProgressContext* progress_ctx,
       StateBuilder<ImageCtxT>** state_builder,
       bool* do_resync,
@@ -127,7 +127,7 @@ private:
   std::string m_global_image_id;
   std::string m_local_mirror_uuid;
   ::journal::CacheManagerHandler *m_cache_manager_handler;
-  PoolMetaCache* m_pool_meta_cache;
+  PoolMetaCache<ImageCtxT>* m_pool_meta_cache;
   ProgressContext *m_progress_ctx;
   StateBuilder<ImageCtxT>** m_state_builder;
   typename std::set<Peer<ImageCtxT>>::iterator m_it_peer;

@@ -45,7 +45,7 @@ NamespaceReplayer<I>::NamespaceReplayer(
     Throttler<I> *image_deletion_throttler,
     ServiceDaemon<I> *service_daemon,
     journal::CacheManagerHandler *cache_manager_handler,
-    PoolMetaCache* pool_meta_cache) :
+    PoolMetaCache<I>* pool_meta_cache) :
   m_namespace_name(name),
   m_local_mirror_uuid(local_mirror_uuid),
   m_threads(threads), m_image_sync_throttler(image_sync_throttler),
@@ -104,6 +104,7 @@ void NamespaceReplayer<I>::shut_down(Context *on_finish) {
     std::lock_guard locker{m_lock};
 
     ceph_assert(m_on_finish == nullptr);
+    ceph_assert(m_peers.size() == 0);
     m_on_finish = on_finish;
 
     if (!m_image_map) {
@@ -799,13 +800,13 @@ void NamespaceReplayer<I>::add_peer(const Peer<I>& peer, Context* on_finish) {
   result.first->second.io_ctx.dup(peer.io_ctx);
   result.first->second.io_ctx.set_namespace(m_namespace_name);
 
-  auto ctx = new LambdaContext([this, result, on_finish](int) {
+  auto ctx = new LambdaContext([this, result, on_finish](int r) {
     if (m_instance_replayer) {
       m_instance_replayer->add_peer({result.first->second.uuid,
                                      result.first->second.io_ctx,
                                      result.first->second.status_updater});
     }
-    m_threads->work_queue->queue(on_finish);
+    m_threads->work_queue->queue(on_finish, r);
   });
 
   init_remote_status_updater(result.first->second, ctx);
@@ -946,7 +947,9 @@ void NamespaceReplayer<I>::remove_peer(const Peer<I>& peer,
     m_instance_replayer->remove_peer({peer_it->second.uuid,
                                       peer_it->second.io_ctx,
                                       peer_it->second.status_updater}, ctx);
+    return;
   }
+  ctx->complete(0);
 }
 
 template <typename I>
@@ -956,33 +959,41 @@ void NamespaceReplayer<I>::handle_remove_peer(const Peer<I>& peer, int r,
   std::lock_guard locker{m_lock};
   auto peer_it = m_peers.find(peer.uuid);
   ceph_assert(peer_it != m_peers.end());
-  auto ctx = new LambdaContext([this, peer_it, on_finish](int r) {
+  Context* ctx = new LambdaContext([this, peer_it, on_finish](int r) {
     std::lock_guard locker{m_lock};
     auto size = m_peers.size();
     m_peers.erase(peer_it);
     ceph_assert(size != m_peers.size());
     m_threads->work_queue->queue(on_finish, r);
   });
-  shut_down_remote_pool_watcher(peer_it->second.pool_watcher, ctx);
+  ctx = new LambdaContext([this, peer_it, ctx](int r) {
+    if (m_image_map) {
+      shut_down_remote_pool_watcher(peer_it->second, ctx);
+      return;
+    }
+    ctx->complete(r);
+  });
+
+  shut_down_remote_status_updater(peer_it->second, ctx);
 }
 
 template <typename I>
 void NamespaceReplayer<I>::shut_down_remote_pool_watcher(
-    PoolWatcher<I>* pool_watcher, Context *on_finish) {
+    Peer<I>& peer, Context *on_finish) {
   dout(10) << dendl;
 
-  ceph_assert(ceph_mutex_is_locked(m_lock));
-  ceph_assert(pool_watcher);
+  std::lock_guard locker{m_lock};
+  ceph_assert(peer.pool_watcher);
 
-  auto ctx = new LambdaContext([this, pool_watcher, on_finish](int r) {
-    handle_shut_down_remote_pool_watcher(pool_watcher, r, on_finish);
+  auto ctx = new LambdaContext([this, &peer, on_finish](int r) {
+    handle_shut_down_remote_pool_watcher(peer, r, on_finish);
   });
-  pool_watcher->shut_down(ctx);
+  peer.pool_watcher->shut_down(ctx);
 }
 
 template <typename I>
 void NamespaceReplayer<I>::handle_shut_down_remote_pool_watcher(
-    PoolWatcher<I>* pool_watcher, int r, Context *on_finish) {
+    Peer<I>& peer, int r, Context *on_finish) {
   dout(10) << "r=" << r << dendl;
 
   if (r < 0) {
@@ -991,9 +1002,10 @@ void NamespaceReplayer<I>::handle_shut_down_remote_pool_watcher(
   }
 
   std::lock_guard locker{m_lock};
-  delete pool_watcher;
+  delete peer.pool_watcher;
+  peer.pool_watcher = nullptr;
 
-  m_threads->work_queue->queue(on_finish);
+  m_threads->work_queue->queue(on_finish, r);
 }
 
 } // namespace mirror

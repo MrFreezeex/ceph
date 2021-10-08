@@ -142,7 +142,8 @@ public:
                           "siteA", "client", m_local_mirror_uuid}));
 
       m_pool_meta_cache.set_remote_pool_meta(
-        m_remote_ioctx.get_id(), {m_remote_mirror_uuid, remote_peer_uuid});
+        m_remote_ioctx.get_id(), remote_peer_uuid,
+        {m_remote_mirror_uuid, remote_peer_uuid});
     }
 
     EXPECT_EQ(0, librbd::api::Mirror<>::uuid_get(m_remote_ioctx,
@@ -211,10 +212,8 @@ public:
     m_replayer = new ImageReplayer<>(m_local_ioctx, m_local_mirror_uuid,
                                      m_global_image_id, m_threads.get(),
                                      m_instance_watcher, m_local_status_updater,
-                                     nullptr, &m_pool_meta_cache);
-    m_replayer->add_peer({"peer uuid", m_remote_ioctx,
-                         {m_remote_mirror_uuid, "remote mirror peer uuid"},
-                         nullptr});
+                                     nullptr, &m_pool_meta_cache, {});
+    m_replayer->add_peer({"peer uuid", m_remote_ioctx});
   }
 
   void start()
@@ -544,7 +543,7 @@ public:
 
   static int _image_number;
 
-  PoolMetaCache m_pool_meta_cache{g_ceph_context};
+  PoolMetaCache<librbd::ImageCtx> m_pool_meta_cache{g_ceph_context};
 
   std::shared_ptr<librados::Rados> m_local_cluster;
   std::unique_ptr<Threads<>> m_threads;

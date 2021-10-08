@@ -3,6 +3,7 @@
 
 #include "common/debug.h"
 #include "common/dout.h"
+#include "librbd/ImageCtx.h"
 #include "tools/rbd_mirror/PoolMetaCache.h"
 #include <shared_mutex>
 
@@ -15,7 +16,8 @@
 namespace rbd {
 namespace mirror {
 
-int PoolMetaCache::get_local_pool_meta(
+template <typename I>
+int PoolMetaCache<I>::get_local_pool_meta(
     int64_t pool_id,
     LocalPoolMeta* local_pool_meta) const {
   dout(15) << "pool_id=" << pool_id << dendl;
@@ -30,7 +32,8 @@ int PoolMetaCache::get_local_pool_meta(
   return 0;
 }
 
-void PoolMetaCache::set_local_pool_meta(
+template <typename I>
+void PoolMetaCache<I>::set_local_pool_meta(
     int64_t pool_id,
     const LocalPoolMeta& local_pool_meta) {
   dout(15) << "pool_id=" << pool_id << ", "
@@ -40,15 +43,17 @@ void PoolMetaCache::set_local_pool_meta(
   m_local_pool_metas[pool_id] = local_pool_meta;
 }
 
-void PoolMetaCache::remove_local_pool_meta(int64_t pool_id) {
+template <typename I>
+void PoolMetaCache<I>::remove_local_pool_meta(int64_t pool_id) {
   dout(15) << "pool_id=" << pool_id << dendl;
 
   std::unique_lock locker(m_lock);
   m_local_pool_metas.erase(pool_id);
 }
 
-int PoolMetaCache::get_remote_pool_meta(
-    int64_t pool_id, std::string peer_uuid,
+template <typename I>
+int PoolMetaCache<I>::get_remote_pool_meta(
+    int64_t pool_id, const std::string& peer_uuid,
     RemotePoolMeta* remote_pool_meta) const {
   dout(15) << "pool_id=" << pool_id << dendl;
 
@@ -62,8 +67,9 @@ int PoolMetaCache::get_remote_pool_meta(
   return 0;
 }
 
-void PoolMetaCache::set_remote_pool_meta(
-    int64_t pool_id, std::string peer_uuid,
+template <typename I>
+void PoolMetaCache<I>::set_remote_pool_meta(
+    int64_t pool_id, const std::string& peer_uuid,
     const RemotePoolMeta& remote_pool_meta) {
   dout(15) << "pool_id=" << pool_id << ", "
            << "remote_pool_meta=" << remote_pool_meta << dendl;
@@ -72,7 +78,9 @@ void PoolMetaCache::set_remote_pool_meta(
   m_remote_pool_metas[{pool_id, peer_uuid}] = remote_pool_meta;
 }
 
-void PoolMetaCache::remove_remote_pool_meta(int64_t pool_id, std::string peer_uuid) {
+template <typename I>
+void PoolMetaCache<I>::remove_remote_pool_meta(int64_t pool_id,
+                                            const std::string& peer_uuid) {
   dout(15) << "pool_id=" << pool_id << dendl;
 
   std::unique_lock locker(m_lock);
@@ -81,3 +89,5 @@ void PoolMetaCache::remove_remote_pool_meta(int64_t pool_id, std::string peer_uu
 
 } // namespace mirror
 } // namespace rbd
+
+template class rbd::mirror::PoolMetaCache<librbd::ImageCtx>;

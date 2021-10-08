@@ -31,7 +31,7 @@ namespace librbd { class ImageCtx; }
 namespace rbd {
 namespace mirror {
 
-struct PoolMetaCache;
+template <typename> struct PoolMetaCache;
 template <typename> class ServiceDaemon;
 template <typename> class Throttler;
 template <typename> struct Threads;
@@ -51,7 +51,7 @@ public:
       Throttler<ImageCtxT> *image_deletion_throttler,
       ServiceDaemon<ImageCtxT> *service_daemon,
       journal::CacheManagerHandler *cache_manager_handler,
-      PoolMetaCache* pool_meta_cache) {
+      PoolMetaCache<ImageCtxT>* pool_meta_cache) {
     return new NamespaceReplayer(name, local_ioctx, local_mirror_uuid,
                                  threads, image_sync_throttler,
                                  image_deletion_throttler, service_daemon,
@@ -66,7 +66,7 @@ public:
                     Throttler<ImageCtxT> *image_deletion_throttler,
                     ServiceDaemon<ImageCtxT> *service_daemon,
                     journal::CacheManagerHandler *cache_manager_handler,
-                    PoolMetaCache* pool_meta_cache);
+                    PoolMetaCache<ImageCtxT>* pool_meta_cache);
   NamespaceReplayer(const NamespaceReplayer&) = delete;
   NamespaceReplayer& operator=(const NamespaceReplayer&) = delete;
 
@@ -267,10 +267,10 @@ private:
   void handle_shut_down_remote_status_updater(Peer<ImageCtxT>& peer,
                                               int r, Context *on_finish);
 
-  void shut_down_remote_pool_watcher(PoolWatcher<ImageCtxT>* pool_watcher,
+  void shut_down_remote_pool_watcher(Peer<ImageCtxT>& peer,
                                      Context *on_finish);
-  void handle_shut_down_remote_pool_watcher(
-      PoolWatcher<ImageCtxT>* pool_watcher, int r, Context *on_finish);
+  void handle_shut_down_remote_pool_watcher(Peer<ImageCtxT>& peer, int r,
+                                            Context *on_finish);
 
   std::string m_namespace_name;
   librados::IoCtx m_local_io_ctx;
@@ -282,7 +282,7 @@ private:
   Throttler<ImageCtxT> *m_image_deletion_throttler;
   ServiceDaemon<ImageCtxT> *m_service_daemon;
   journal::CacheManagerHandler *m_cache_manager_handler;
-  PoolMetaCache* m_pool_meta_cache;
+  PoolMetaCache<ImageCtxT>* m_pool_meta_cache;
 
   mutable ceph::mutex m_lock;
 
