@@ -13,6 +13,7 @@ if(WITH_GRAFANA)
     add_tox_test(grafana-check TOX_ENVS grafonnet-check)
     add_tox_test(grafana-query-test TOX_ENVS promql-query-test)
     add_tox_test(grafana-lint TOX_ENVS lint)
+    add_tox_test(jsonnet-lint TOX_ENVS jsonnet-lint)
   endif()
 endif()
 
