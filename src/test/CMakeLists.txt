@@ -622,7 +622,7 @@ if(PROMTOOL_EXECUTABLE)
     OUTPUT_QUIET)
   if(NOT rc)
     add_ceph_test(run-promtool-unittests
-      ${PROMTOOL_EXECUTABLE} test rules ${CMAKE_SOURCE_DIR}/monitoring/prometheus/tests/test_alerts.yml)
+      ${PROMTOOL_EXECUTABLE} test rules ${CMAKE_SOURCE_DIR}/monitoring/ceph-mixin/tests_alerts/test_alerts.yml)
   elseif(NOT promtool_executable_checked)
     message(WARNING "'${PROMTOOL_EXECUTABLE} test rules' does not work, "
       "please use a newer prometheus")
