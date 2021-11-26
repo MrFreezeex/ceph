@@ -6,6 +6,18 @@ if(WITH_GRAFANA)
   install(FILES
     ${CEPH_GRAFANA_DASHBOARDS}
     DESTINATION ${CEPH_GRAFANA_DASHBOARDS_DIR})
+  if (WITH_TESTS)
+    ExternalProject_Add(jsonnet-bundler
+      GIT_REPOSITORY "https://github.com/jsonnet-bundler/jsonnet-bundler.git"
+      GIT_TAG "v0.4.0"
+      GIT_SHALLOW TRUE
+      SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/src/jsonnet-bundler
+      CONFIGURE_COMMAND ""
+      DOWNLOAD_DIR ${CMAKE_CURRENT_BINARY_DIR}/src
+      BUILD_COMMAND $(MAKE)
+      BUILD_IN_SOURCE 1
+      INSTALL_COMMAND "")
+  endif()
 
   set(CEPH_BUILD_VIRTUALENV $ENV{TMPDIR})
   if(NOT CEPH_BUILD_VIRTUALENV)
