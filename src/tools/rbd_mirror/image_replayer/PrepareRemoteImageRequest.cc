@@ -117,15 +117,7 @@ void PrepareRemoteImageRequest<I>::handle_get_mirror_info(int r) {
     finish(-ENOENT);
     return;
   } else if (m_promotion_state != librbd::mirror::PROMOTION_STATE_PRIMARY) {
-    // no local image and remote isn't primary -- don't sync it
-    dout(5) << "remote image is not primary -- not syncing" << dendl;
-    if (state_builder == nullptr ||
-        state_builder->local_image_id.empty() ||
-        state_builder->local_promotion_state == librbd::mirror::PROMOTION_STATE_UNKNOWN) {
-      finish(-EREMOTEIO);
-      return;
-    }
-    m_r = -ENOENT;
+    m_r = -EREMOTEIO;
   }
 
   switch (m_mirror_image.mode) {

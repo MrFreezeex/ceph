@@ -420,11 +420,12 @@ cleanup()
         echo =================================
         status
         echo sleeping...
-        sleep 5m
+        sleep 2m
         echo =================================
         echo SECOND STATUS
         echo =================================
         status
+        cat
     fi
 
     if [ -z "${RBD_MIRROR_NOCLEANUP}" ]; then

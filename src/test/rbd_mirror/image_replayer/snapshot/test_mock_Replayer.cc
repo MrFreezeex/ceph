@@ -1080,9 +1080,8 @@ TEST_F(TestMockImageReplayerSnapshotReplayer, InterruptedSyncDelta) {
   MockReplayer mock_replayer{&mock_threads, &mock_instance_watcher,
                              "local mirror uuid", &m_pool_meta_cache,
                              &mock_state_builder, &mock_replayer_listener};
-  m_pool_meta_cache.set_remote_pool_meta(
-    m_remote_io_ctx.get_id(),
-    {"remote mirror uuid", "remote mirror peer uuid"});
+  expect_remote_pool_meta_cache_get(m_pool_meta_cache, "remote mirror uuid",
+    {"remote mirror uuid", "remote mirror peer uuid"}, 0);
 
   librbd::UpdateWatchCtx* update_watch_ctx = nullptr;
   ASSERT_EQ(0, init_entry_replayer(mock_replayer, mock_threads,
@@ -1201,9 +1200,8 @@ TEST_F(TestMockImageReplayerSnapshotReplayer, InterruptedSyncDeltaDemote) {
   MockReplayer mock_replayer{&mock_threads, &mock_instance_watcher,
                              "local mirror uuid", &m_pool_meta_cache,
                              &mock_state_builder, &mock_replayer_listener};
-  m_pool_meta_cache.set_remote_pool_meta(
-    m_remote_io_ctx.get_id(),
-    {"remote mirror uuid", "remote mirror peer uuid"});
+  expect_remote_pool_meta_cache_get(m_pool_meta_cache, "remote mirror uuid",
+    {"remote mirror uuid", "remote mirror peer uuid"}, 0);
 
   librbd::UpdateWatchCtx* update_watch_ctx = nullptr;
   ASSERT_EQ(0, init_entry_replayer(mock_replayer, mock_threads,
@@ -1310,9 +1308,8 @@ TEST_F(TestMockImageReplayerSnapshotReplayer, InterruptedPendingSyncInitial) {
   MockReplayer mock_replayer{&mock_threads, &mock_instance_watcher,
                              "local mirror uuid", &m_pool_meta_cache,
                              &mock_state_builder, &mock_replayer_listener};
-  m_pool_meta_cache.set_remote_pool_meta(
-    m_remote_io_ctx.get_id(),
-    {"remote mirror uuid", "remote mirror peer uuid"});
+  expect_remote_pool_meta_cache_get(m_pool_meta_cache, "remote mirror uuid",
+    {"remote mirror uuid", "remote mirror peer uuid"}, 0);
 
   librbd::UpdateWatchCtx* update_watch_ctx = nullptr;
   ASSERT_EQ(0, init_entry_replayer(mock_replayer, mock_threads,
@@ -1394,9 +1391,8 @@ TEST_F(TestMockImageReplayerSnapshotReplayer, InterruptedPendingSyncDelta) {
   MockReplayer mock_replayer{&mock_threads, &mock_instance_watcher,
                              "local mirror uuid", &m_pool_meta_cache,
                              &mock_state_builder, &mock_replayer_listener};
-  m_pool_meta_cache.set_remote_pool_meta(
-    m_remote_io_ctx.get_id(),
-    {"remote mirror uuid", "remote mirror peer uuid"});
+  expect_remote_pool_meta_cache_get(m_pool_meta_cache, "remote mirror uuid",
+    {"remote mirror uuid", "remote mirror peer uuid"}, 0);
 
   librbd::UpdateWatchCtx* update_watch_ctx = nullptr;
   ASSERT_EQ(0, init_entry_replayer(mock_replayer, mock_threads,
@@ -1534,9 +1530,8 @@ TEST_F(TestMockImageReplayerSnapshotReplayer, InterruptedPendingSyncDeltaDemote)
   MockReplayer mock_replayer{&mock_threads, &mock_instance_watcher,
                              "local mirror uuid", &m_pool_meta_cache,
                              &mock_state_builder, &mock_replayer_listener};
-  m_pool_meta_cache.set_remote_pool_meta(
-    m_remote_io_ctx.get_id(),
-    {"remote mirror uuid", "remote mirror peer uuid"});
+  expect_remote_pool_meta_cache_get(m_pool_meta_cache, "remote mirror uuid",
+    {"remote mirror uuid", "remote mirror peer uuid"}, 0);
 
   librbd::UpdateWatchCtx* update_watch_ctx = nullptr;
   ASSERT_EQ(0, init_entry_replayer(mock_replayer, mock_threads,

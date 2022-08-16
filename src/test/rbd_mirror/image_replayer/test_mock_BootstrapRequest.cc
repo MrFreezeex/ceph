@@ -551,16 +551,13 @@ TEST_F(TestMockImageReplayerBootstrapRequest, Success) {
   expect_prepare_replay(mock_state_builder, false, false, 0);
   expect_is_disconnected(mock_state_builder, false);
 
-  // close remote image
-  expect_replay_requires_remote_image(mock_state_builder, false);
-  expect_close_remote_image(mock_state_builder, 0);
-
   C_SaferCond ctx;
   MockThreads mock_threads(m_threads);
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &mock_pool_meta_cache, &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
 }
@@ -575,6 +572,9 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalD
               m_local_image_ctx->id, m_local_image_ctx->name, -ENOENT);
 
   // prepare remote image
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
+  expect_remote_pool_meta_cache_get(mock_pool_meta_cache, "remote mirror uuid",
+                                    {"remote mirror uuid", ""}, 0);
   MockPrepareRemoteImageRequest mock_prepare_remote_image_request;
   expect_send(mock_prepare_remote_image_request, mock_state_builder,
               "remote mirror uuid", m_remote_image_ctx->id, 0);
@@ -586,9 +586,10 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalD
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &mock_pool_meta_cache, &ctx);
   request->send();
-  ASSERT_EQ(-EREMOTEIO, ctx.wait());
+  ASSERT_EQ(-ENOENT, ctx.wait());
 }
 
 TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalUnlinked) {
@@ -599,8 +600,12 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalU
   MockPrepareLocalImageRequest mock_prepare_local_image_request;
   expect_send(mock_prepare_local_image_request, mock_state_builder,
               m_local_image_ctx->id, m_local_image_ctx->name, 0);
+  expect_is_local_primary(mock_state_builder, false);
 
   // prepare remote image
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
+  expect_remote_pool_meta_cache_get(mock_pool_meta_cache, "remote mirror uuid",
+                                    {"remote mirror uuid", ""}, 0);
   MockPrepareRemoteImageRequest mock_prepare_remote_image_request;
   expect_send(mock_prepare_remote_image_request, mock_state_builder,
               "remote mirror uuid", m_remote_image_ctx->id, 0);
@@ -613,9 +618,10 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalU
   MockInstanceWatcher mock_instance_watcher;
   MockBootstrapRequest *request = create_request(
     &mock_threads, &mock_instance_watcher, "global image id",
-    "local mirror uuid", &ctx);
+    "local mirror uuid", {{"remote mirror uuid", m_remote_io_ctx}},
+    &mock_pool_meta_cache, &ctx);
   request->send();
-  ASSERT_EQ(-EREMOTEIO, ctx.wait());
+  ASSERT_EQ(-ENOENT, ctx.wait());
 }
 
 TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalLinked) {
@@ -626,8 +632,12 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalL
   MockPrepareLocalImageRequest mock_prepare_local_image_request;
   expect_send(mock_prepare_local_image_request, mock_state_builder,
               m_local_image_ctx->id, m_local_image_ctx->name, 0);
+  expect_is_local_primary(mock_state_builder, false);
 
   // prepare remote image
+  MockPoolMetaCache mock_pool_meta_cache{g_ceph_context};
+  expect_remote_pool_meta_cache_get(mock_pool_meta_cache, "remote mirror uuid",
+                                    {"remote mirror uuid", ""}, 0);
   MockPrepareRemoteImageRequest mock_prepare_remote_image_request;
   expect_send(mock_prepare_remote_image_request, mock_state_builder,
               "remote mirror uuid", m_remote_image_ctx->id, 0);
@@ -1170,10 +1180,6 @@ TEST_F(TestMockImageReplayerBootstrapRequest, CloseRemoteImageError) {
   expect_prepare_replay(mock_state_builder, false, false, 0);
   expect_is_disconnected(mock_state_builder, false);
 
-  // attempt to close remote image
-  expect_replay_requires_remote_image(mock_state_builder, false);
-  expect_close_remote_image(mock_state_builder, -EINVAL);
-
   C_SaferCond ctx;
   MockThreads mock_threads(m_threads);
   MockInstanceWatcher mock_instance_watcher;
@@ -1220,9 +1226,6 @@ TEST_F(TestMockImageReplayerBootstrapRequest, ReplayRequiresRemoteImage) {
   // prepare replay
   expect_prepare_replay(mock_state_builder, false, false, 0);
   expect_is_disconnected(mock_state_builder, false);
-
-  // remote image is left open
-  expect_replay_requires_remote_image(mock_state_builder, true);
 
   C_SaferCond ctx;
   MockThreads mock_threads(m_threads);

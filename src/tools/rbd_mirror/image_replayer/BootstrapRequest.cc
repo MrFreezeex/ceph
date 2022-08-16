@@ -167,11 +167,6 @@ void BootstrapRequest<I>::prepare_remote_image() {
   if (m_it_peer == m_peers.end()) {
     dout(10) << "no peer left" << dendl;
 
-    if (m_r_prepare_remote_image == -EREMOTEIO) {
-      finish(-ENOENT);
-      return;
-    }
-
     auto state_builder = *m_state_builder;
 
     if (state_builder == nullptr) {
@@ -206,7 +201,6 @@ void BootstrapRequest<I>::prepare_remote_image() {
 template <typename I>
 void BootstrapRequest<I>::handle_prepare_remote_image(int r) {
   dout(10) << "r=" << r << dendl;
-  m_r_prepare_remote_image = r;
 
   auto state_builder = *m_state_builder;
   ceph_assert(state_builder == nullptr ||
@@ -217,7 +211,7 @@ void BootstrapRequest<I>::handle_prepare_remote_image(int r) {
 
     finish(-ENOMSG);
     return;
-  } else if (r == -EREMOTEIO || r == -ENOENT || state_builder == nullptr) {
+  } else if (r == -ENOENT || state_builder == nullptr) {
     dout(10) << "remote image does not exist";
     if (state_builder != nullptr) {
       *_dout << ", local_image_id=" << state_builder->local_image_id  << ", "
@@ -234,6 +228,22 @@ void BootstrapRequest<I>::handle_prepare_remote_image(int r) {
 
     prepare_remote_image();
     return;
+  } else if (!state_builder->is_remote_primary()) {
+    ceph_assert(!state_builder->remote_image_id.empty());
+
+    if (state_builder->local_image_id.empty()) {
+      dout(10) << "local image does not exist and remote image is not primary"
+               << dendl;
+      ++m_it_peer;
+      prepare_remote_image();
+      return;
+    } else if (!state_builder->is_linked()) {
+      dout(10) << "local image is unlinked and remote image is not primary"
+               << dendl;
+      ++m_it_peer;
+      prepare_remote_image();
+      return;
+    }
   } else if (r < 0) {
     derr << "error preparing remote image for replay: " << cpp_strerror(r)
          << dendl;
